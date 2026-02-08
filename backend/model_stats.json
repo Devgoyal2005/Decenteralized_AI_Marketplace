@@ -1,0 +1,45 @@
+{
+  "dataset": {
+    "name": "BraTS 2020",
+    "total_3d_volumes": 368,
+    "total_2d_slices": 57040,
+    "tumor_slices": 24354,
+    "non_tumor_slices": 32686,
+    "average_tumor_percentage": 1.11
+  },
+  "model_architecture": {
+    "name": "U-Net 2D",
+    "total_parameters": 7771297,
+    "trainable_parameters": 7765409,
+    "non_trainable_parameters": 5888,
+    "model_size_mb": 29.65,
+    "input_shape": [128, 128, 1],
+    "output_shape": [128, 128, 1]
+  },
+  "training_config": {
+    "segmentation_type": "binary",
+    "loss_function": "binary_crossentropy",
+    "optimizer": "Adam",
+    "learning_rate": 0.0001,
+    "batch_size": 32,
+    "epochs": 15,
+    "validation_split": 0.15,
+    "test_split": 0.10
+  },
+  "performance_metrics": {
+    "final_train_accuracy": 99.81,
+    "final_val_accuracy": 99.77,
+    "final_train_dice": 95.00,
+    "final_val_dice": 94.27,
+    "final_train_loss": 0.0046,
+    "final_val_loss": 0.0057
+  },
+  "training_progression": [
+    {"epoch": 1, "train_acc": 99.57, "val_acc": 99.54, "dice": 68.27},
+    {"epoch": 2, "train_acc": 99.62, "val_acc": 99.62, "dice": 75.31},
+    {"epoch": 3, "train_acc": 99.67, "val_acc": 99.64, "dice": 80.62},
+    {"epoch": 4, "train_acc": 99.69, "val_acc": 99.68, "dice": 84.38},
+    {"epoch": 5, "train_acc": 99.71, "val_acc": 99.71, "dice": 85.84},
+    {"epoch": 15, "train_acc": 99.81, "val_acc": 99.77, "dice": 94.27}
+  ]
+}
