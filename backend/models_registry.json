@@ -1,0 +1,42 @@
+{
+  "models": [
+    {
+      "id": "brain-tumor-unet",
+      "name": "Brain Tumor Segmentation U-Net",
+      "description": "U-Net architecture for binary brain tumor segmentation trained on BraTS 2020 dataset",
+      "creator": "0x0000000000000000000000000000000000000000",
+      "ipfs_hash": "QmRYe4zFrtaMfVxdv2SzFCroEwnp5ukfmLpyDJ4QXdNo4P",
+      "metadata_ipfs_hash": "",
+      "model_type": "keras",
+      "input_shape": [
+        128,
+        128,
+        1
+      ],
+      "output_shape": [
+        128,
+        128,
+        1
+      ],
+      "price_monthly": 49.99,
+      "price_yearly": 499.99,
+      "uploaded_at": "2026-02-08T00:00:00Z",
+      "downloads": 0,
+      "predictions": 0,
+      "active": true,
+      "tags": [
+        "medical",
+        "imaging",
+        "segmentation",
+        "brain",
+        "tumor"
+      ],
+      "performance": {
+        "accuracy": 99.77,
+        "dice_coefficient": 94.27,
+        "dataset": "BraTS 2020",
+        "training_samples": 368
+      }
+    }
+  ]
+}

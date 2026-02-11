@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import tensorflow as tf
@@ -10,6 +10,13 @@ import json
 from PIL import Image
 import io
 import os
+import tempfile
+import uuid
+from typing import Optional
+
+# Import our IPFS modules
+from ipfs_service import IPFSService
+from model_manager import ModelManager
 
 # Suppress TensorFlow verbose output
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -29,7 +36,11 @@ app.add_middleware(
 MODEL_PATH = Path("unet_brain_tumor_final.keras")  # Look in current directory
 STATS_PATH = Path("model_stats.json")
 
-# Global model variable
+# Initialize IPFS service and Model Manager
+ipfs_service = IPFSService()
+model_manager = ModelManager(ipfs_service)
+
+# Global model variable (kept for backwards compatibility, but we'll use model_manager now)
 model = None
 
 
@@ -44,57 +55,49 @@ def dice_coef(y_true, y_pred, smooth=1e-7):
 
 @app.on_event("startup")
 async def load_model():
-    """Load the trained model on startup"""
+    """Load the default brain tumor model on startup"""
     global model
     
-    # Make MODEL_PATH absolute to avoid issues with working directory
-    model_path_abs = Path(__file__).parent / "unet_brain_tumor_final.keras"
-    
     print(f"\n{'='*80}")
-    print(f"[DEBUG] Current working directory: {Path.cwd()}")
-    print(f"[DEBUG] Script location: {Path(__file__).parent}")
-    print(f"[DEBUG] Model path: {model_path_abs}")
-    print(f"[DEBUG] Model exists: {model_path_abs.exists()}")
+    print("🚀 Starting DAMM Backend with IPFS Support")
     print(f"{'='*80}\n")
     
-    if not model_path_abs.exists():
-        print(f"❌ Model file not found at {model_path_abs}")
-        print("⚠️ API will run but predictions will fail")
-        model = None
-        return
+    # Try to load the brain tumor model (for backwards compatibility)
+    model_path_abs = Path(__file__).parent / "unet_brain_tumor_final.keras"
     
-    print(f"Loading model from: {model_path_abs}")
-    
-    try:
-        # Suppress TensorFlow logging
-        import logging
-        logging.getLogger('tensorflow').setLevel(logging.FATAL)
+    if model_path_abs.exists():
+        print(f"Loading default brain tumor model from: {model_path_abs}")
         
-        # Load model with custom objects
-        model = keras.models.load_model(
-            str(model_path_abs),
-            custom_objects={'dice_coef': dice_coef}
-        )
-        
-        print("\n" + "="*80)
-        print("✅ Model loaded successfully!")
-        print(f"📊 Model input shape: {model.input_shape}")
-        print(f"📊 Model output shape: {model.output_shape}")
-        print(f"📊 Model is not None: {model is not None}")
-        print("="*80 + "\n")
-        
-    except Exception as e:
-        print("\n" + "="*80)
-        print(f"❌ EXCEPTION DURING MODEL LOADING:")
-        print(f"Exception type: {type(e).__name__}")
-        print(f"Exception message: {str(e)}")
-        print("="*80)
-        import traceback
-        traceback.print_exc()
-        print("="*80)
-        print("⚠️ API will run but predictions will fail")
-        print("="*80 + "\n")
+        try:
+            # Suppress TensorFlow logging
+            import logging
+            logging.getLogger('tensorflow').setLevel(logging.FATAL)
+            
+            # Load model with custom objects
+            model = keras.models.load_model(
+                str(model_path_abs),
+                custom_objects={'dice_coef': dice_coef}
+            )
+            
+            print("\n" + "="*80)
+            print("✅ Default model loaded successfully!")
+            print(f"📊 Model input shape: {model.input_shape}")
+            print(f"📊 Model output shape: {model.output_shape}")
+            print("="*80 + "\n")
+            
+        except Exception as e:
+            print(f"⚠️ Could not load default model: {str(e)}")
+            model = None
+    else:
+        print("ℹ️ No default model found. Models will be loaded dynamically from IPFS.")
         model = None
+    
+    # Print IPFS status
+    print(f"\n{'='*80}")
+    print("📡 IPFS Service Status:")
+    print(f"   Pinata configured: {ipfs_service.api_key is not None}")
+    print(f"   Models in registry: {len(model_manager.list_models())}")
+    print(f"{'='*80}\n")
 
 # Load model statistics
 with open(STATS_PATH, 'r') as f:
@@ -138,9 +141,22 @@ async def root():
 
 @app.get("/api/models")
 async def get_models():
-    """Get list of available models"""
-    models = [
-        {
+    """Get list of available models from registry"""
+    try:
+        models_list = model_manager.list_models()
+        
+        # Add gateway URLs for each model
+        for model_info in models_list:
+            if model_info.get('ipfs_hash'):
+                model_info['gateway_url'] = f"https://gateway.pinata.cloud/ipfs/{model_info['ipfs_hash']}"
+                model_info['ipfs_url'] = f"ipfs://{model_info['ipfs_hash']}"
+        
+        return {"models": models_list}
+    
+    except Exception as e:
+        print(f"Error loading models: {str(e)}")
+        # Fallback to hardcoded model if registry fails
+        return {"models": [{
             "id": "brain-tumor-unet",
             "name": "Brain Tumor Segmentation (U-Net)",
             "description": "U-Net deep learning model for brain tumor segmentation from MRI scans",
@@ -149,59 +165,143 @@ async def get_models():
             "version": "1.0.0",
             "accuracy": 99.77,
             "stats": model_stats
-        }
-    ]
-    return {"models": models}
+        }]}
 
 
 @app.get("/api/models/{model_id}")
 async def get_model_details(model_id: str):
     """Get detailed information about a specific model"""
-    if model_id != "brain-tumor-unet":
+    model_info = model_manager.get_model_info(model_id)
+    
+    if not model_info:
         raise HTTPException(status_code=404, detail="Model not found")
     
-    return {
-        "id": "brain-tumor-unet",
-        "name": "Brain Tumor Segmentation (U-Net)",
-        "description": "Advanced U-Net architecture trained on BraTS 2020 dataset for precise brain tumor segmentation from FLAIR MRI scans",
-        "category": "Medical Imaging",
-        "featured": True,
-        "version": "1.0.0",
-        "author": "DAMM Research Team",
-        "created_at": "2024-02-08",
-        "stats": model_stats,
-        "architecture": {
-            "type": "U-Net 2D",
-            "input_shape": [128, 128, 1],
-            "output_shape": [128, 128, 1],
-            "activation": "sigmoid",
-            "loss": "binary_crossentropy",
-            "optimizer": "Adam (lr=1e-4)"
-        },
-        "performance": {
-            "train_accuracy": 99.81,
-            "val_accuracy": 99.77,
-            "dice_coefficient": 94.27,
-            "epochs_trained": 15
-        },
-        "subscription": {
-            "price_monthly": 49.99,
-            "price_yearly": 499.99,
-            "api_calls_limit": 10000
+    # Add gateway URLs
+    if model_info.get('ipfs_hash'):
+        model_info['gateway_url'] = f"https://gateway.pinata.cloud/ipfs/{model_info['ipfs_hash']}"
+        model_info['ipfs_url'] = f"ipfs://{model_info['ipfs_hash']}"
+    
+    return model_info
+
+
+@app.post("/api/models/upload")
+async def upload_model(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    description: str = Form(...),
+    creator: str = Form(...),
+    model_type: str = Form("keras"),
+    category: str = Form("General"),
+    price_monthly: Optional[float] = Form(None),
+    price_yearly: Optional[float] = Form(None)
+):
+    """Upload a new model to IPFS and add to registry"""
+    
+    # Validate file extension
+    allowed_extensions = ['.keras', '.h5', '.pkl', '.pt', '.pth']
+    file_ext = Path(file.filename).suffix.lower()
+    
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    try:
+        # Save temporary file
+        temp_dir = Path(tempfile.gettempdir())
+        temp_file = temp_dir / f"upload_{uuid.uuid4()}{file_ext}"
+        
+        # Write uploaded file to disk
+        content = await file.read()
+        with open(temp_file, 'wb') as f:
+            f.write(content)
+        
+        print(f"📤 Uploading {file.filename} ({len(content) / 1024 / 1024:.2f} MB) to IPFS...")
+        
+        # Upload to IPFS
+        ipfs_hash = ipfs_service.upload_file(str(temp_file), file.filename)
+        
+        if not ipfs_hash:
+            raise HTTPException(status_code=500, detail="Failed to upload to IPFS")
+        
+        print(f"✅ Uploaded to IPFS: {ipfs_hash}")
+        
+        # Generate model ID
+        model_id = f"{name.lower().replace(' ', '-')}-{str(uuid.uuid4())[:8]}"
+        
+        # Prepare metadata
+        metadata = {
+            "id": model_id,
+            "name": name,
+            "description": description,
+            "creator": creator,
+            "ipfs_hash": ipfs_hash,
+            "model_type": model_type,
+            "category": category,
+            "created_at": str(Path(temp_file).stat().st_mtime),
+            "file_size_mb": len(content) / 1024 / 1024,
+            "pricing": {
+                "monthly": price_monthly,
+                "yearly": price_yearly
+            }
         }
-    }
+        
+        # Add to registry
+        model_manager.add_model(metadata)
+        
+        # Clean up temp file
+        temp_file.unlink()
+        
+        return {
+            "success": True,
+            "model_id": model_id,
+            "ipfs_hash": ipfs_hash,
+            "gateway_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}",
+            "message": f"Model '{name}' uploaded successfully"
+        }
+    
+    except Exception as e:
+        # Clean up on error
+        if 'temp_file' in locals() and temp_file.exists():
+            temp_file.unlink()
+        
+        print(f"❌ Upload error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @app.post("/api/predict")
-async def predict(file: UploadFile = File(...)):
-    """Predict tumor segmentation from uploaded MRI image"""
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+async def predict(
+    file: UploadFile = File(...),
+    model_id: Optional[str] = Form("brain-tumor-unet")
+):
+    """Predict tumor segmentation from uploaded MRI image using specified model"""
     
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="File must be an image")
     
     try:
+        # Load the specified model (will download from IPFS if needed)
+        print(f"🔄 Loading model: {model_id}")
+        
+        loaded_model = model_manager.load_model(
+            model_id,
+            custom_objects={'dice_coef': dice_coef}
+        )
+        
+        if loaded_model is None:
+            # Fallback to global model if available
+            if model is not None:
+                loaded_model = model
+                print("ℹ️ Using default loaded model")
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Model '{model_id}' not found and no default model loaded"
+                )
+        
+        print(f"✅ Model loaded: {model_id}")
+        
         # Read image file
         image_data = await file.read()
         image = Image.open(io.BytesIO(image_data))
@@ -212,7 +312,7 @@ async def predict(file: UploadFile = File(...)):
         print(f"Preprocessed image shape: {processed_img.shape}")
         
         # Make prediction
-        prediction = model.predict(processed_img, verbose=0)
+        prediction = loaded_model.predict(processed_img, verbose=0)
         print(f"Prediction shape: {prediction.shape}")
         
         # Extract mask
@@ -229,8 +329,17 @@ async def predict(file: UploadFile = File(...)):
         # Convert mask to list for JSON serialization
         mask_list = binary_mask.tolist()
         
+        # Determine where model was loaded from
+        model_source = "memory"
+        if model_manager.is_model_cached(model_id):
+            model_source = "cache"
+        elif model_manager.get_model_info(model_id).get('ipfs_hash'):
+            model_source = "ipfs"
+        
         return {
             "success": True,
+            "model_id": model_id,
+            "model_source": model_source,
             "prediction": {
                 "mask": mask_list,
                 "tumor_detected": tumor_pixels > 0,
