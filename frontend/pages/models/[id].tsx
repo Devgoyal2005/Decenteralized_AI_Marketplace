@@ -8,14 +8,22 @@ interface ModelDetails {
   name: string
   description: string
   category: string
-  featured: boolean
-  version: string
-  author: string
-  created_at: string
-  stats: any
-  architecture: any
-  performance: any
-  subscription: any
+  featured?: boolean
+  version?: string
+  author?: string
+  creator?: string
+  created_at?: string
+  uploaded_at?: string
+  ipfs_hash?: string
+  gateway_url?: string
+  stats?: any
+  architecture?: any
+  performance?: any
+  pricing?: {
+    monthly?: number
+    yearly?: number
+  }
+  subscription?: any  // Keep for backwards compatibility
 }
 
 export default function ModelDetails() {
@@ -157,10 +165,12 @@ export default function ModelDetails() {
                 <div className="border-2 border-indigo-200 rounded-lg p-4 hover:border-indigo-500 transition-colors">
                   <div className="flex justify-between items-center mb-2">
                     <h3 className="font-bold text-lg">Monthly Plan</h3>
-                    <span className="text-2xl font-bold text-indigo-600">${model.subscription.price_monthly}</span>
+                    <span className="text-2xl font-bold text-indigo-600">
+                      ${model.pricing?.monthly || model.subscription?.price_monthly || '49.99'}
+                    </span>
                   </div>
                   <p className="text-sm text-gray-600 mb-4">
-                    {model.subscription.api_calls_limit.toLocaleString()} API calls/month
+                    {model.subscription?.api_calls_limit?.toLocaleString() || '10,000'} API calls/month
                   </p>
                   <button
                     onClick={handleSubscribe}
@@ -172,10 +182,12 @@ export default function ModelDetails() {
                 <div className="border-2 border-purple-200 rounded-lg p-4 hover:border-purple-500 transition-colors">
                   <div className="flex justify-between items-center mb-2">
                     <h3 className="font-bold text-lg">Yearly Plan</h3>
-                    <span className="text-2xl font-bold text-purple-600">${model.subscription.price_yearly}</span>
+                    <span className="text-2xl font-bold text-purple-600">
+                      ${model.pricing?.yearly || model.subscription?.price_yearly || '499.99'}
+                    </span>
                   </div>
                   <p className="text-sm text-gray-600 mb-2">
-                    {model.subscription.api_calls_limit.toLocaleString()} API calls/month
+                    {model.subscription?.api_calls_limit?.toLocaleString() || '10,000'} API calls/month
                   </p>
                   <p className="text-xs text-green-600 font-semibold mb-4">Save 17%!</p>
                   <button
@@ -190,6 +202,7 @@ export default function ModelDetails() {
           </div>
 
           {/* Dataset Statistics */}
+          {model.stats?.dataset && (
           <div className="mb-8">
             <h2 className="text-2xl font-bold mb-4">Dataset Statistics</h2>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -211,8 +224,10 @@ export default function ModelDetails() {
               </div>
             </div>
           </div>
+          )}
 
           {/* Model Architecture */}
+          {model.stats?.model_architecture && (
           <div className="mb-8">
             <h2 className="text-2xl font-bold mb-4">Model Architecture</h2>
             <div className="bg-gray-50 p-6 rounded-lg">
@@ -231,21 +246,23 @@ export default function ModelDetails() {
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Input Shape</p>
-                  <p className="font-semibold">{model.architecture.input_shape.join(' × ')}</p>
+                  <p className="font-semibold">{model.architecture?.input_shape?.join(' × ') || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Loss Function</p>
-                  <p className="font-semibold">{model.architecture.loss}</p>
+                  <p className="font-semibold">{model.architecture?.loss || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Optimizer</p>
-                  <p className="font-semibold">{model.architecture.optimizer}</p>
+                  <p className="font-semibold">{model.architecture?.optimizer || 'N/A'}</p>
                 </div>
               </div>
             </div>
           </div>
+          )}
 
           {/* Training Progress Chart */}
+          {model.stats?.training_progression && (
           <div className="mb-8">
             <h2 className="text-2xl font-bold mb-4">Training Progress</h2>
             <ResponsiveContainer width="100%" height={300}>
@@ -261,6 +278,7 @@ export default function ModelDetails() {
               </LineChart>
             </ResponsiveContainer>
           </div>
+          )}
 
           {/* Try Model */}
           <div className="border-t pt-8">

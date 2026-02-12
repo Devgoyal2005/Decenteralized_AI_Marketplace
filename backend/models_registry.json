@@ -37,6 +37,37 @@
         "dataset": "BraTS 2020",
         "training_samples": 368
       }
+    },
+    {
+      "id": "example_model-2f8c26c7",
+      "name": "Example_model",
+      "description": "Testing",
+      "creator": "0x91ab709a669c8b7fd14e0972935a41bab06fb147",
+      "ipfs_hash": "QmRYe4zFrtaMfVxdv2SzFCroEwnp5ukfmLpyDJ4QXdNo4P",
+      "model_type": "keras",
+      "category": "Computer Vision",
+      "uploaded_at": "2026-02-12T11:40:38.044236",
+      "file_size_mb": 89.18,
+      "downloads": 0,
+      "predictions": 0,
+      "active": true,
+      "pricing": {
+        "monthly": 5.0,
+        "yearly": 10.0
+      },
+      "input_shape": [
+        128,
+        128,
+        1
+      ],
+      "output_shape": [
+        128,
+        128,
+        1
+      ],
+      "performance": {
+        "accuracy": 99.77
+      }
     }
   ]
 }

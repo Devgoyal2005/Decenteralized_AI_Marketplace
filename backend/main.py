@@ -13,9 +13,10 @@ import os
 import tempfile
 import uuid
 from typing import Optional
+from datetime import datetime
 
 # Import our IPFS modules
-from ipfs_service import IPFSService
+from ipfs_service import IPFSService, IPFS_GATEWAY, PINATA_API_KEY
 from model_manager import ModelManager
 
 # Suppress TensorFlow verbose output
@@ -95,7 +96,7 @@ async def load_model():
     # Print IPFS status
     print(f"\n{'='*80}")
     print("📡 IPFS Service Status:")
-    print(f"   Pinata configured: {ipfs_service.api_key is not None}")
+    print(f"   Pinata configured: {PINATA_API_KEY is not None}")
     print(f"   Models in registry: {len(model_manager.list_models())}")
     print(f"{'='*80}\n")
 
@@ -148,7 +149,7 @@ async def get_models():
         # Add gateway URLs for each model
         for model_info in models_list:
             if model_info.get('ipfs_hash'):
-                model_info['gateway_url'] = f"https://gateway.pinata.cloud/ipfs/{model_info['ipfs_hash']}"
+                model_info['gateway_url'] = f"{IPFS_GATEWAY}{model_info['ipfs_hash']}"
                 model_info['ipfs_url'] = f"ipfs://{model_info['ipfs_hash']}"
         
         return {"models": models_list}
@@ -178,7 +179,7 @@ async def get_model_details(model_id: str):
     
     # Add gateway URLs
     if model_info.get('ipfs_hash'):
-        model_info['gateway_url'] = f"https://gateway.pinata.cloud/ipfs/{model_info['ipfs_hash']}"
+        model_info['gateway_url'] = f"{IPFS_GATEWAY}{model_info['ipfs_hash']}"
         model_info['ipfs_url'] = f"ipfs://{model_info['ipfs_hash']}"
     
     return model_info
@@ -193,7 +194,11 @@ async def upload_model(
     model_type: str = Form("keras"),
     category: str = Form("General"),
     price_monthly: Optional[float] = Form(None),
-    price_yearly: Optional[float] = Form(None)
+    price_yearly: Optional[float] = Form(None),
+    input_shape: Optional[str] = Form(None),
+    output_shape: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
+    accuracy: Optional[float] = Form(None)
 ):
     """Upload a new model to IPFS and add to registry"""
     
@@ -239,13 +244,39 @@ async def upload_model(
             "ipfs_hash": ipfs_hash,
             "model_type": model_type,
             "category": category,
-            "created_at": str(Path(temp_file).stat().st_mtime),
-            "file_size_mb": len(content) / 1024 / 1024,
+            "uploaded_at": datetime.now().isoformat(),
+            "file_size_mb": round(len(content) / 1024 / 1024, 2),
+            "downloads": 0,
+            "predictions": 0,
+            "active": True,
             "pricing": {
                 "monthly": price_monthly,
                 "yearly": price_yearly
             }
         }
+        
+        # Parse and add input/output shapes if provided
+        if input_shape:
+            try:
+                metadata["input_shape"] = json.loads(f"[{input_shape}]")
+            except:
+                metadata["input_shape"] = input_shape
+        
+        if output_shape:
+            try:
+                metadata["output_shape"] = json.loads(f"[{output_shape}]")
+            except:
+                metadata["output_shape"] = output_shape
+        
+        # Add tags if provided
+        if tags:
+            metadata["tags"] = [tag.strip() for tag in tags.split(',')]
+        
+        # Add performance metrics if provided
+        if accuracy:
+            metadata["performance"] = {
+                "accuracy": accuracy
+            }
         
         # Add to registry
         model_manager.add_model(metadata)
@@ -257,7 +288,7 @@ async def upload_model(
             "success": True,
             "model_id": model_id,
             "ipfs_hash": ipfs_hash,
-            "gateway_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}",
+            "gateway_url": f"{IPFS_GATEWAY}{ipfs_hash}",
             "message": f"Model '{name}' uploaded successfully"
         }
     

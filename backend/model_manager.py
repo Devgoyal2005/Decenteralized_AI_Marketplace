@@ -9,8 +9,6 @@ from datetime import datetime
 import tensorflow as tf
 from tensorflow import keras
 
-from ipfs_service import ipfs_service
-
 # Model cache directory
 MODEL_CACHE_DIR = Path(os.getenv("MODEL_CACHE_DIR", "./model_cache"))
 MODEL_CACHE_DIR.mkdir(exist_ok=True)
@@ -22,9 +20,16 @@ REGISTRY_FILE = Path(__file__).parent / "models_registry.json"
 class ModelManager:
     """Manages model loading, caching, and registry"""
     
-    def __init__(self):
+    def __init__(self, ipfs_service_instance=None):
         self.loaded_models: Dict[str, Any] = {}  # model_id -> loaded model object
         self.registry = self._load_registry()
+        
+        # Import ipfs_service if not provided
+        if ipfs_service_instance:
+            self.ipfs_service = ipfs_service_instance
+        else:
+            from ipfs_service import ipfs_service
+            self.ipfs_service = ipfs_service
     
     def _load_registry(self) -> Dict:
         """Load the models registry from JSON"""
@@ -130,7 +135,7 @@ class ModelManager:
             
             # Download from IPFS
             print(f"📥 Downloading model {model_id} from IPFS...")
-            success = ipfs_service.download_file(ipfs_hash, str(cache_path))
+            success = self.ipfs_service.download_file(ipfs_hash, str(cache_path))
             
             if success:
                 print(f"✅ Model {model_id} downloaded to cache")
@@ -237,5 +242,5 @@ class ModelManager:
             print("✅ Model cache cleared")
 
 
-# Global instance
-model_manager = ModelManager()
+# Global instance (will be initialized in main.py with ipfs_service)
+# model_manager = ModelManager()

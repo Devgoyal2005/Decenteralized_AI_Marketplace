@@ -9,7 +9,14 @@ interface Model {
   category: string
   featured: boolean
   version: string
-  accuracy: number
+  accuracy?: number
+  ipfs_hash?: string
+  gateway_url?: string
+  creator?: string
+  pricing?: {
+    monthly?: number
+    yearly?: number
+  }
 }
 
 export default function Home() {
@@ -33,6 +40,26 @@ export default function Home() {
 
   return (
     <div className="px-4 py-8">
+      {/* Navigation */}
+      <nav className="max-w-7xl mx-auto mb-8">
+        <div className="flex justify-between items-center">
+          <Link href="/" className="text-2xl font-bold text-indigo-600">
+            DAMM
+          </Link>
+          <div className="flex items-center space-x-6">
+            <Link href="/" className="text-gray-700 hover:text-indigo-600 font-medium">
+              Marketplace
+            </Link>
+            <Link href="/upload" className="text-gray-700 hover:text-indigo-600 font-medium">
+              Upload
+            </Link>
+            <Link href="/about" className="text-gray-700 hover:text-indigo-600 font-medium">
+              About
+            </Link>
+          </div>
+        </div>
+      </nav>
+
       <div className="text-center mb-12">
         <h1 className="text-5xl font-bold text-gray-900 mb-4">
           DAMM
@@ -68,21 +95,58 @@ export default function Home() {
                 <div className="flex justify-between items-start mb-4">
                   <h3 className="text-xl font-bold text-gray-900">{model.name}</h3>
                   <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded">
-                    {model.version}
+                    {model.version || 'v1.0'}
                   </span>
                 </div>
                 <p className="text-gray-600 mb-4 text-sm">{model.description}</p>
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-sm text-gray-500">{model.category}</span>
-                  <span className="text-sm font-semibold text-indigo-600">
-                    Accuracy: {model.accuracy}%
-                  </span>
+                
+                <div className="space-y-2 mb-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-500">{model.category}</span>
+                    {model.accuracy && (
+                      <span className="text-sm font-semibold text-indigo-600">
+                        Accuracy: {model.accuracy}%
+                      </span>
+                    )}
+                  </div>
+                  
+                  {model.ipfs_hash && (
+                    <div className="text-xs text-gray-500 truncate">
+                      <span className="font-semibold">IPFS:</span> {model.ipfs_hash.substring(0, 12)}...
+                    </div>
+                  )}
+                  
+                  {model.creator && (
+                    <div className="text-xs text-gray-500 truncate">
+                      <span className="font-semibold">Creator:</span> {model.creator.substring(0, 8)}...
+                    </div>
+                  )}
+                  
+                  {model.pricing && model.pricing.monthly && (
+                    <div className="text-sm font-bold text-green-600">
+                      ${model.pricing.monthly}/month
+                    </div>
+                  )}
                 </div>
-                <Link href={`/models/${model.id}`}>
-                  <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded transition-colors">
-                    View Details →
-                  </button>
-                </Link>
+                
+                <div className="flex gap-2">
+                  <Link href={`/models/${model.id}`} className="flex-1">
+                    <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded transition-colors">
+                      View Details →
+                    </button>
+                  </Link>
+                  {model.gateway_url && (
+                    <a 
+                      href={model.gateway_url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium py-2 px-3 rounded transition-colors"
+                      title="View on IPFS"
+                    >
+                      📡
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
           ))}

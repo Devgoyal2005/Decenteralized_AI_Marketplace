@@ -149,10 +149,15 @@ class IPFSService:
             
             # Try multiple gateways for redundancy
             gateways = [
+                f"{IPFS_GATEWAY}{ipfs_hash}",  # User's custom gateway first
                 f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}",
                 f"https://ipfs.io/ipfs/{ipfs_hash}",
                 f"https://cloudflare-ipfs.com/ipfs/{ipfs_hash}"
             ]
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            gateways = [x for x in gateways if not (x in seen or seen.add(x))]
             
             print(f"📥 Downloading from IPFS: {ipfs_hash}")
             
