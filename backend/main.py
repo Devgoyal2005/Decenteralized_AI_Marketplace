@@ -14,6 +14,7 @@ import tempfile
 import uuid
 from typing import Optional
 from datetime import datetime
+import base64
 
 # Import our IPFS modules
 from ipfs_service import IPFSService, IPFS_GATEWAY, PINATA_API_KEY
@@ -145,6 +146,19 @@ async def get_models():
     """Get list of available models from registry"""
     try:
         models_list = model_manager.list_models()
+        pinned_hashes = set()
+        if PINATA_API_KEY:
+            pinned_files = ipfs_service.list_pinned_files()
+            pinned_hashes = {
+                f.get('ipfs_pin_hash') for f in pinned_files if f.get('ipfs_pin_hash')
+            }
+            # Only include models still pinned on Pinata
+            if pinned_hashes:
+                models_list = [
+                    m for m in models_list if m.get('ipfs_hash') in pinned_hashes
+                ]
+            else:
+                models_list = []
         
         # Add gateway URLs for each model
         for model_info in models_list:
@@ -156,17 +170,7 @@ async def get_models():
     
     except Exception as e:
         print(f"Error loading models: {str(e)}")
-        # Fallback to hardcoded model if registry fails
-        return {"models": [{
-            "id": "brain-tumor-unet",
-            "name": "Brain Tumor Segmentation (U-Net)",
-            "description": "U-Net deep learning model for brain tumor segmentation from MRI scans",
-            "category": "Medical Imaging",
-            "featured": True,
-            "version": "1.0.0",
-            "accuracy": 99.77,
-            "stats": model_stats
-        }]}
+        return {"models": []}
 
 
 @app.get("/api/models/{model_id}")
@@ -177,6 +181,15 @@ async def get_model_details(model_id: str):
     if not model_info:
         raise HTTPException(status_code=404, detail="Model not found")
     
+    # Verify model is still pinned on Pinata
+    if model_info.get('ipfs_hash') and PINATA_API_KEY:
+        pinned_files = ipfs_service.list_pinned_files()
+        pinned_hashes = {
+            f.get('ipfs_pin_hash') for f in pinned_files if f.get('ipfs_pin_hash')
+        }
+        if model_info.get('ipfs_hash') not in pinned_hashes:
+            raise HTTPException(status_code=404, detail="Model not found on Pinata")
+
     # Add gateway URLs
     if model_info.get('ipfs_hash'):
         model_info['gateway_url'] = f"{IPFS_GATEWAY}{model_info['ipfs_hash']}"
@@ -193,8 +206,8 @@ async def upload_model(
     creator: str = Form(...),
     model_type: str = Form("keras"),
     category: str = Form("General"),
-    price_monthly: Optional[float] = Form(None),
-    price_yearly: Optional[float] = Form(None),
+    price_per_hour: Optional[float] = Form(None),
+    payment_currency: Optional[str] = Form("ETH"),
     input_shape: Optional[str] = Form(None),
     output_shape: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
@@ -250,8 +263,8 @@ async def upload_model(
             "predictions": 0,
             "active": True,
             "pricing": {
-                "monthly": price_monthly,
-                "yearly": price_yearly
+                "per_hour": price_per_hour,
+                "currency": payment_currency
             }
         }
         
@@ -299,6 +312,148 @@ async def upload_model(
         
         print(f"❌ Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.put("/api/models/{model_id}")
+async def update_model(
+    model_id: str,
+    wallet_address: str = Form(...),
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    category: Optional[str] = Form(None),
+    price_per_hour: Optional[float] = Form(None),
+    payment_currency: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
+    accuracy: Optional[float] = Form(None)
+):
+    """Update model metadata (only by owner)"""
+    
+    # Get model info
+    model_info = model_manager.get_model_info(model_id)
+    if not model_info:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    # Verify ownership
+    if model_info.get('creator', '').lower() != wallet_address.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="Only the model owner can edit this model"
+        )
+    
+    # Update fields
+    if name:
+        model_info['name'] = name
+    if description:
+        model_info['description'] = description
+    if category:
+        model_info['category'] = category
+    if price_per_hour is not None:
+        if 'pricing' not in model_info:
+            model_info['pricing'] = {}
+        model_info['pricing']['per_hour'] = price_per_hour
+    if payment_currency:
+        if 'pricing' not in model_info:
+            model_info['pricing'] = {}
+        model_info['pricing']['currency'] = payment_currency
+    if tags:
+        model_info['tags'] = [tag.strip() for tag in tags.split(',')]
+    if accuracy is not None:
+        if 'performance' not in model_info:
+            model_info['performance'] = {}
+        model_info['performance']['accuracy'] = accuracy
+    
+    # Update in registry
+    model_manager.update_model(model_id, model_info)
+    
+    return {
+        "success": True,
+        "message": "Model updated successfully",
+        "model": model_info
+    }
+
+
+@app.delete("/api/models/{model_id}")
+async def delete_model(model_id: str, wallet_address: str = Form(...)):
+    """Delete model (only by owner)"""
+    
+    # Get model info
+    model_info = model_manager.get_model_info(model_id)
+    if not model_info:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    # Verify ownership
+    if model_info.get('creator', '').lower() != wallet_address.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="Only the model owner can delete this model"
+        )
+    
+    # Unpin from Pinata
+    ipfs_hash = model_info.get('ipfs_hash')
+    if ipfs_hash:
+        try:
+            unpin_success = ipfs_service.unpin_file(ipfs_hash)
+            if unpin_success:
+                print(f"✅ Unpinned {ipfs_hash} from Pinata")
+            else:
+                print(f"⚠️ Failed to unpin {ipfs_hash} from Pinata")
+        except Exception as e:
+            print(f"⚠️ Error unpinning: {str(e)}")
+    
+    # Remove from registry
+    model_manager.delete_model(model_id)
+    
+    # Remove from cache if exists
+    cache_dir = Path("model_cache")
+    cache_file = cache_dir / f"{model_id}.{model_info.get('model_type', 'keras')}"
+    if cache_file.exists():
+        cache_file.unlink()
+        print(f"🗑️ Removed cached model: {cache_file}")
+    
+    return {
+        "success": True,
+        "message": f"Model '{model_info.get('name')}' deleted successfully"
+    }
+
+
+@app.post("/api/models/{model_id}/purchase")
+async def purchase_model(model_id: str, wallet_address: str = Form(...)):
+    """
+    Purchase a model - downloads it to local cache for use
+    For now, this is free. Payment integration will be added later.
+    """
+    
+    model_info = model_manager.get_model_info(model_id)
+    if not model_info:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    # Download model to cache
+    try:
+        print(f"📥 Purchasing model {model_id} for {wallet_address}...")
+        
+        # This will download and cache the model
+        cached_path = model_manager.download_model(model_id)
+        
+        if not cached_path:
+            raise HTTPException(status_code=500, detail="Failed to download model")
+        
+        # Increment download counter
+        model_info['downloads'] = model_info.get('downloads', 0) + 1
+        model_manager.update_model(model_id, model_info)
+        
+        print(f"✅ Model purchased and cached: {cached_path}")
+        
+        return {
+            "success": True,
+            "message": f"Model '{model_info.get('name')}' purchased successfully",
+            "model_id": model_id,
+            "cached": True,
+            "pricing": model_info.get('pricing', {})
+        }
+    
+    except Exception as e:
+        print(f"❌ Purchase error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Purchase failed: {str(e)}")
 
 
 @app.post("/api/predict")
@@ -360,6 +515,42 @@ async def predict(
         # Convert mask to list for JSON serialization
         mask_list = binary_mask.tolist()
         
+        # Create segmented image for visualization
+        # Convert binary mask to image (0-255 range)
+        mask_img = (binary_mask * 255).astype(np.uint8)
+        
+        # Convert to PIL Image
+        mask_pil = Image.fromarray(mask_img, mode='L')
+        
+        # Convert to base64 for frontend display
+        buffered = io.BytesIO()
+        mask_pil.save(buffered, format="PNG")
+        mask_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
+        # Also create overlay image (original + mask)
+        # Resize original to 128x128 if needed
+        original_resized = image.resize((128, 128), Image.LANCZOS)
+        if original_resized.mode != 'RGB':
+            original_resized = original_resized.convert('RGB')
+        
+        original_array = np.array(original_resized)
+        
+        # Create red overlay for tumor regions
+        overlay = original_array.copy()
+        overlay[:, :, 0] = np.where(binary_mask > 0.5, 255, overlay[:, :, 0])  # Red channel
+        overlay[:, :, 1] = np.where(binary_mask > 0.5, 0, overlay[:, :, 1])    # Green channel
+        overlay[:, :, 2] = np.where(binary_mask > 0.5, 0, overlay[:, :, 2])    # Blue channel
+        
+        # Blend original and overlay
+        alpha = 0.4
+        blended = cv2.addWeighted(original_array, 1-alpha, overlay, alpha, 0)
+        
+        # Convert to PIL and base64
+        blended_pil = Image.fromarray(blended.astype(np.uint8))
+        buffered2 = io.BytesIO()
+        blended_pil.save(buffered2, format="PNG")
+        overlay_base64 = base64.b64encode(buffered2.getvalue()).decode('utf-8')
+        
         # Determine where model was loaded from
         model_source = "memory"
         if model_manager.is_model_cached(model_id):
@@ -373,6 +564,8 @@ async def predict(
             "model_source": model_source,
             "prediction": {
                 "mask": mask_list,
+                "mask_image": f"data:image/png;base64,{mask_base64}",
+                "overlay_image": f"data:image/png;base64,{overlay_base64}",
                 "tumor_detected": tumor_pixels > 0,
                 "tumor_percentage": round(tumor_percentage, 2),
                 "confidence": round(float(np.max(mask)), 4),
@@ -397,6 +590,22 @@ async def health_check():
     }
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.post("/api/admin/cleanup-pinata")
+async def cleanup_pinata(confirm: bool = Form(False)):
+    """Admin endpoint to remove all pinned files from Pinata"""
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Must confirm cleanup with confirm=true")
+    
+    try:
+        result = ipfs_service.unpin_all()
+        return {
+            "success": True,
+            "message": f"Cleaned up Pinata storage",
+            "unpinned_count": result['success'],
+            "failed_count": len(result['failed']),
+            "failed_hashes": result['failed']
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
+

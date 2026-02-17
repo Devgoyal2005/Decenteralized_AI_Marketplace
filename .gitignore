@@ -22,3 +22,5 @@ unet_brain_tumor_final.keras
 
 # Model cache directory
 model_cache/
+AI models/
+

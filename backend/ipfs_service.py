@@ -198,7 +198,92 @@ class IPFSService:
     def get_gateway_url(self, ipfs_hash: str) -> str:
         """Get the gateway URL for an IPFS hash"""
         return f"{IPFS_GATEWAY}{ipfs_hash}"
-
-
-# Global instance
+    
+    def unpin_file(self, ipfs_hash: str) -> bool:
+        """
+        Unpin a file from Pinata
+        
+        Args:
+            ipfs_hash: IPFS hash to unpin
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not PINATA_API_KEY or not PINATA_SECRET_KEY:
+            print("❌ Cannot unpin: Pinata credentials not configured")
+            return False
+        
+        try:
+            unpin_url = f"https://api.pinata.cloud/pinning/unpin/{ipfs_hash}"
+            
+            print(f"🗑️ Unpinning {ipfs_hash} from Pinata...")
+            response = requests.delete(unpin_url, headers=self.headers)
+            
+            if response.status_code == 200:
+                print(f"✅ Successfully unpinned {ipfs_hash}")
+                return True
+            else:
+                print(f"❌ Unpin failed: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error unpinning: {str(e)}")
+            return False
+    
+    def list_pinned_files(self) -> list:
+        """
+        List all pinned files on Pinata
+        
+        Returns:
+            List of pinned file objects
+        """
+        if not PINATA_API_KEY or not PINATA_SECRET_KEY:
+            print("❌ Cannot list: Pinata credentials not configured")
+            return []
+        
+        try:
+            list_url = "https://api.pinata.cloud/data/pinList?status=pinned"
+            response = requests.get(list_url, headers=self.headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('rows', [])
+            else:
+                print(f"❌ List failed: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            print(f"❌ Error listing: {str(e)}")
+            return []
+    
+    def unpin_all(self) -> dict:
+        """
+        Unpin all files from Pinata
+        
+        Returns:
+            Dictionary with success count and failed hashes
+        """
+        pinned_files = self.list_pinned_files()
+        
+        if not pinned_files:
+            print("ℹ️ No pinned files found")
+            return {"success": 0, "failed": []}
+        
+        print(f"Found {len(pinned_files)} pinned files")
+        
+        success_count = 0
+        failed_hashes = []
+        
+        for file in pinned_files:
+            ipfs_hash = file.get('ipfs_pin_hash')
+            if ipfs_hash:
+                if self.unpin_file(ipfs_hash):
+                    success_count += 1
+                else:
+                    failed_hashes.append(ipfs_hash)
+        
+        return {
+            "success": success_count,
+            "failed": failed_hashes
+        }
 ipfs_service = IPFSService()

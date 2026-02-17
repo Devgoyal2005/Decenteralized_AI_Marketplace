@@ -9,8 +9,8 @@ export default function Upload() {
     creator: '',
     model_type: 'keras',
     category: 'General',
-    price_monthly: '',
-    price_yearly: '',
+    price_per_hour: '',
+    payment_currency: 'ETH',
     input_shape: '',
     output_shape: '',
     tags: '',
@@ -19,6 +19,7 @@ export default function Upload() {
   
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadResult, setUploadResult] = useState<any>(null);
   const [error, setError] = useState('');
   
@@ -69,6 +70,7 @@ export default function Upload() {
     setUploading(true);
     setError('');
     setUploadResult(null);
+    setUploadProgress(0);
     
     try {
       const formDataToSend = new FormData();
@@ -79,11 +81,11 @@ export default function Upload() {
       formDataToSend.append('model_type', formData.model_type);
       formDataToSend.append('category', formData.category);
       
-      if (formData.price_monthly) {
-        formDataToSend.append('price_monthly', formData.price_monthly);
+      if (formData.price_per_hour) {
+        formDataToSend.append('price_per_hour', formData.price_per_hour);
       }
-      if (formData.price_yearly) {
-        formDataToSend.append('price_yearly', formData.price_yearly);
+      if (formData.payment_currency) {
+        formDataToSend.append('payment_currency', formData.payment_currency);
       }
       if (formData.input_shape) {
         formDataToSend.append('input_shape', formData.input_shape);
@@ -98,37 +100,73 @@ export default function Upload() {
         formDataToSend.append('accuracy', formData.accuracy);
       }
       
-      const response = await fetch('http://localhost:8000/api/models/upload', {
-        method: 'POST',
-        body: formDataToSend,
+      // Use XMLHttpRequest to track upload progress
+      await new Promise<any>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        
+        // Track upload progress
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percentComplete = Math.round((e.loaded / e.total) * 100);
+            setUploadProgress(percentComplete);
+          }
+        });
+        
+        // Handle completion
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const result = JSON.parse(xhr.responseText);
+              resolve(result);
+            } catch (e) {
+              reject(new Error('Invalid response from server'));
+            }
+          } else {
+            try {
+              const errorData = JSON.parse(xhr.responseText);
+              reject(new Error(errorData.detail || 'Upload failed'));
+            } catch (e) {
+              reject(new Error(`Upload failed with status ${xhr.status}`));
+            }
+          }
+        });
+        
+        // Handle errors
+        xhr.addEventListener('error', () => {
+          reject(new Error('Network error during upload'));
+        });
+        
+        xhr.addEventListener('abort', () => {
+          reject(new Error('Upload cancelled'));
+        });
+        
+        // Send request
+        xhr.open('POST', 'http://localhost:8000/api/models/upload');
+        xhr.send(formDataToSend);
+      }).then((result) => {
+        setUploadResult(result);
+        
+        // Reset form
+        setFormData({
+          name: '',
+          description: '',
+          creator: walletAddress,
+          model_type: 'keras',
+          category: 'General',
+          price_per_hour: '',
+          payment_currency: 'ETH',
+          input_shape: '',
+          output_shape: '',
+          tags: '',
+          accuracy: '',
+        });
+        setFile(null);
+        setUploadProgress(100);
       });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Upload failed');
-      }
-      
-      const result = await response.json();
-      setUploadResult(result);
-      
-      // Reset form
-      setFormData({
-        name: '',
-        description: '',
-        creator: walletAddress,
-        model_type: 'keras',
-        category: 'General',
-        price_monthly: '',
-        price_yearly: '',
-        input_shape: '',
-        output_shape: '',
-        tags: '',
-        accuracy: '',
-      });
-      setFile(null);
       
     } catch (err: any) {
       setError(err.message || 'Upload failed');
+      setUploadProgress(0);
     } finally {
       setUploading(false);
     }
@@ -392,34 +430,38 @@ export default function Upload() {
               <div className="grid grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Monthly Price (USD)
+                    Price Per Hour
                   </label>
                   <input
                     type="number"
-                    name="price_monthly"
-                    value={formData.price_monthly}
+                    name="price_per_hour"
+                    value={formData.price_per_hour}
                     onChange={handleInputChange}
-                    step="0.01"
+                    step="0.0001"
                     min="0"
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    placeholder="49.99"
+                    placeholder="0.005"
                   />
+                  <p className="text-xs text-gray-500 mt-1">Cost for 1 hour of usage</p>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Yearly Price (USD)
+                    Payment Currency
                   </label>
-                  <input
-                    type="number"
-                    name="price_yearly"
-                    value={formData.price_yearly}
+                  <select
+                    name="payment_currency"
+                    value={formData.payment_currency}
                     onChange={handleInputChange}
-                    step="0.01"
-                    min="0"
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    placeholder="499.99"
-                  />
+                  >
+                    <option value="ETH">ETH (Ethereum)</option>
+                    <option value="BTC">BTC (Bitcoin)</option>
+                    <option value="USDC">USDC (USD Coin)</option>
+                    <option value="DAI">DAI (Stablecoin)</option>
+                    <option value="MATIC">MATIC (Polygon)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Preferred payment token</p>
                 </div>
               </div>
 
@@ -440,12 +482,33 @@ export default function Upload() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
-                      Uploading to IPFS...
+                      Uploading {uploadProgress}%
                     </span>
                   ) : (
                     'Upload to IPFS'
                   )}
                 </button>
+                
+                {/* Progress Bar */}
+                {uploading && uploadProgress > 0 && (
+                  <div className="mt-4">
+                    <div className="flex justify-between text-sm text-gray-600 mb-2">
+                      <span>Upload Progress</span>
+                      <span>{uploadProgress}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                      <div
+                        className="bg-indigo-600 h-3 rounded-full transition-all duration-300 ease-out"
+                        style={{ width: `${uploadProgress}%` }}
+                      >
+                        <div className="h-full w-full bg-gradient-to-r from-indigo-500 to-indigo-600 animate-pulse"></div>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2 text-center">
+                      {uploadProgress < 100 ? 'Uploading to Pinata IPFS...' : 'Processing...'}
+                    </p>
+                  </div>
+                )}
               </div>
             </form>
 

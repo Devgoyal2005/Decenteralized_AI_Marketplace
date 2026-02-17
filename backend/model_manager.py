@@ -240,6 +240,68 @@ class ModelManager:
             shutil.rmtree(MODEL_CACHE_DIR)
             MODEL_CACHE_DIR.mkdir(exist_ok=True)
             print("✅ Model cache cleared")
+    
+    def update_model(self, model_id: str, updated_data: dict) -> bool:
+        """
+        Update model metadata in registry
+        
+        Args:
+            model_id: ID of the model to update
+            updated_data: Dictionary with updated fields
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Find and update the model
+            for i, model in enumerate(self.registry['models']):
+                if model['id'] == model_id:
+                    # Update with new data
+                    self.registry['models'][i] = updated_data
+                    self._save_registry()
+                    print(f"✅ Model {model_id} updated in registry")
+                    return True
+            
+            print(f"❌ Model {model_id} not found in registry")
+            return False
+            
+        except Exception as e:
+            print(f"❌ Error updating model: {str(e)}")
+            return False
+    
+    def delete_model(self, model_id: str) -> bool:
+        """
+        Delete model from registry
+        
+        Args:
+            model_id: ID of the model to delete
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Find and remove the model
+            original_count = len(self.registry['models'])
+            self.registry['models'] = [
+                m for m in self.registry['models'] if m['id'] != model_id
+            ]
+            
+            if len(self.registry['models']) < original_count:
+                self._save_registry()
+                
+                # Also unload from memory if loaded
+                if model_id in self.loaded_models:
+                    del self.loaded_models[model_id]
+                
+                print(f"✅ Model {model_id} deleted from registry")
+                return True
+            else:
+                print(f"❌ Model {model_id} not found in registry")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error deleting model: {str(e)}")
+            return False
 
 
 # Global instance (will be initialized in main.py with ipfs_service)
