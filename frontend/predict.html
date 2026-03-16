@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Predict</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <nav class="top-nav">
+      <a href="index.html">Home</a>
+      <a href="upload.html">Upload Model</a>
+      <a href="predict.html" class="active">Predict</a>
+    </nav>
+
+    <h1>Run Prediction</h1>
+    <p class="sub">Buy a model first, then predict using JSON input or image upload for CNN models.</p>
+
+    <section class="predict-panel">
+      <label>Model
+        <select id="modelSelect"></select>
+      </label>
+      <button id="buySelectedBtn" type="button" class="secondary-btn">Buy Selected Model</button>
+      <div id="modelInfo" class="muted"></div>
+    </section>
+
+    <form id="predictForm">
+      <label id="jsonInputLabel">Input JSON Array*
+        <textarea id="predictInput" placeholder="Example: [0.2, 0.7, 0.1]" required></textarea>
+      </label>
+      <label id="imageInputLabel" style="display:none;">Upload Image*
+        <input id="predictImage" type="file" accept="image/*" />
+      </label>
+      <button type="submit">Predict</button>
+    </form>
+
+    <section>
+      <h2>Prediction Result</h2>
+      <pre id="predictResult">No prediction yet.</pre>
+    </section>
+  </main>
+
+  <script src="predict.js?v=2"></script>
+</body>
+</html>

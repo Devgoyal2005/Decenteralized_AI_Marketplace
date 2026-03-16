@@ -1,0 +1,63 @@
+{
+  "models": [
+    {
+      "id": "model-c428f9c5c0",
+      "name": "Flower classification",
+      "description": "dcxcas",
+      "creator": "",
+      "model_type": "CNN",
+      "task_type": "Classification",
+      "framework": "PyTorch",
+      "category": "Computer Vision",
+      "ipfs_hash": "QmcoEtQvsUoJoTsbjjPq9P5GTbKrXPTX6svbnGjcLQK92A",
+      "gateway_url": "https://gateway.pinata.cloud/ipfs/QmcoEtQvsUoJoTsbjjPq9P5GTbKrXPTX6svbnGjcLQK92A",
+      "file_name": "flowers_classifier_vgg16.h5",
+      "file_size_mb": 96.496,
+      "uploaded_at": "2026-03-15T13:49:28.735862Z",
+      "input_shape": [
+        "224",
+        "224",
+        "3"
+      ],
+      "output_shape": [],
+      "output_labels": [
+        "daisy",
+        "dandelion",
+        "rose",
+        "sunflower",
+        "tulip"
+      ],
+      "tags": [],
+      "gpu_required": false,
+      "verified": true,
+      "metadata_ipfs_hash": "QmUkSr9FYKoCb23kSErWUmqrPs21PWJQT9eAGH6Z2R1JcP",
+      "metadata_gateway_url": "https://gateway.pinata.cloud/ipfs/QmUkSr9FYKoCb23kSErWUmqrPs21PWJQT9eAGH6Z2R1JcP",
+      "purchased": true,
+      "downloaded_at": "2026-03-16T09:13:31.119230Z",
+      "local_model_path": "D:\\Decenteralized_AI_Marketplace\\backend\\downloaded_models\\QmcoEtQvsUoJoTsbjjPq9P5GTbKrXPTX6svbnGjcLQK92A.h5"
+    },
+    {
+      "id": "model-dbfd521822",
+      "name": "Example_model",
+      "description": "dczsc",
+      "creator": "",
+      "model_type": "CNN",
+      "task_type": "Classification",
+      "framework": "PyTorch",
+      "category": "Computer Vision",
+      "ipfs_hash": "QmYbpuddiSSiFpsw4Me598zartjozroZJ6NtXQqqGWR94D",
+      "gateway_url": "https://gateway.pinata.cloud/ipfs/QmYbpuddiSSiFpsw4Me598zartjozroZJ6NtXQqqGWR94D",
+      "file_name": "dogs_vs_cats_vgg16.h5",
+      "file_size_mb": 129.714,
+      "uploaded_at": "2026-03-15T13:50:38.137675Z",
+      "input_shape": [],
+      "output_shape": [],
+      "output_labels": [],
+      "tags": [],
+      "gpu_required": false,
+      "verified": true,
+      "metadata_ipfs_hash": "QmXKPGPGgfB32bfWGja48YCCAX1FU8A2CpjgMvUdQx8AxL",
+      "metadata_gateway_url": "https://gateway.pinata.cloud/ipfs/QmXKPGPGgfB32bfWGja48YCCAX1FU8A2CpjgMvUdQx8AxL"
+    }
+  ]
+}
