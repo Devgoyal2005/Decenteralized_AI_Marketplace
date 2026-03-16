@@ -45,11 +45,13 @@
             <option>Vision Transformer</option>
             <option>YOLO</option>
             <option>U-Net</option>
+            <option>Basic ML</option>
           </select>
         </label>
         <label>Task Type
           <select name="task_type">
             <option>Classification</option>
+            <option>Regression</option>
             <option>Object Detection</option>
             <option>Segmentation</option>
             <option>Text Generation</option>
@@ -63,6 +65,34 @@
             <option>Forecasting</option>
           </select>
         </label>
+        <label>Input Type
+          <select name="input_type" id="inputType">
+            <option value="Image tensor">Image tensor</option>
+            <option value="Tabular numeric features">Tabular numeric features</option>
+            <option value="Tabular mixed features (numeric/text)">Tabular mixed features (numeric/text)</option>
+            <option value="Text string">Text string</option>
+            <option value="Prompt text">Prompt text</option>
+            <option value="Audio waveform/features">Audio waveform/features</option>
+            <option value="Time-series window">Time-series window</option>
+            <option value="Question + context text">Question + context text</option>
+            <option value="Noise vector / condition">Noise vector / condition</option>
+          </select>
+        </label>
+        <label>Output Type
+          <select name="output_type" id="outputType">
+            <option value="Class probabilities (multi-class)">Class probabilities (multi-class)</option>
+            <option value="Class probabilities (binary)">Class probabilities (binary)</option>
+            <option value="Single continuous numeric value">Single continuous numeric value</option>
+            <option value="Bounding boxes + class scores">Bounding boxes + class scores</option>
+            <option value="Pixel-wise mask">Pixel-wise mask</option>
+            <option value="Generated text">Generated text</option>
+            <option value="Generated image">Generated image</option>
+            <option value="Translated text">Translated text</option>
+            <option value="Answer span/text">Answer span/text</option>
+            <option value="Ranked item scores">Ranked item scores</option>
+            <option value="Future value(s)">Future value(s)</option>
+          </select>
+        </label>
         <label>Framework
           <select name="framework">
             <option>PyTorch</option>
@@ -71,8 +101,11 @@
             <option>ONNX</option>
           </select>
         </label>
-        <label>Input Shape <input type="text" name="input_shape" placeholder="224,224,3" /></label>
-        <label>Output Labels <input type="text" name="output_labels" placeholder="daisy,rose,tulip" /></label>
+        <input type="hidden" name="input_shape" id="inputShape" value="" />
+        <input type="hidden" name="output_labels" id="outputLabels" value="" />
+        <input type="hidden" name="feature_columns" id="featureColumns" value="" />
+        <input type="hidden" name="feature_types" id="featureTypes" value="" />
+        <input type="hidden" name="target_column" id="targetColumn" value="" />
         <label>Tags <input type="text" name="tags" placeholder="flowers,classification" /></label>
         <label>Price per Request (ETH) <input type="number" step="0.0001" name="price_per_request" /></label>
         <label>Payment Currency

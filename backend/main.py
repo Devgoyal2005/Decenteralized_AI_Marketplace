@@ -134,6 +134,23 @@ def _parse_csv(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+TASK_IO_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "Classification": {"input_type": "Image tensor", "output_type": "Class probabilities"},
+    "Regression": {"input_type": "Tabular features (numeric/text)", "output_type": "Single continuous numeric value"},
+    "Object Detection": {"input_type": "Image tensor", "output_type": "Bounding boxes + class scores"},
+    "Segmentation": {"input_type": "Image tensor", "output_type": "Pixel-wise mask"},
+    "Text Generation": {"input_type": "Prompt text", "output_type": "Generated text"},
+    "Text Classification": {"input_type": "Text string", "output_type": "Class probabilities"},
+    "Machine Translation": {"input_type": "Source text", "output_type": "Translated text"},
+    "Speech Recognition": {"input_type": "Audio waveform/features", "output_type": "Transcribed text"},
+    "Image Generation": {"input_type": "Noise vector / condition", "output_type": "Generated image"},
+    "Text-to-Image": {"input_type": "Prompt text", "output_type": "Generated image"},
+    "Question Answering": {"input_type": "Question + context text", "output_type": "Answer span/text"},
+    "Recommendation": {"input_type": "User/item features", "output_type": "Ranked item scores"},
+    "Forecasting": {"input_type": "Time-series window", "output_type": "Future value(s)"},
+}
+
+
 def _post_with_retries(url: str, *, headers: Dict[str, str], retries: int, **kwargs):
     last_error: Optional[Exception] = None
     for attempt in range(retries + 1):
@@ -195,6 +212,11 @@ def process_upload(job_id: str, file_bytes: bytes, file_filename: str, file_cont
             "task_type": metadata["task_type"],
             "framework": metadata["framework"],
             "category": metadata["category"],
+            "input_type": metadata.get("input_type", ""),
+            "output_type": metadata.get("output_type", ""),
+            "feature_columns": metadata.get("feature_columns", []),
+            "feature_types": metadata.get("feature_types", []),
+            "target_column": metadata.get("target_column", ""),
             "ipfs_hash": file_ipfs_hash,
             "gateway_url": f"{IPFS_GATEWAY.rstrip('/')}/{file_ipfs_hash}",
             "file_name": file_filename,
@@ -294,6 +316,11 @@ async def upload_model(
     task_type: str = Form("Classification"),
     framework: str = Form("TensorFlow"),
     category: str = Form("Computer Vision"),
+    input_type: str = Form(""),
+    output_type: str = Form(""),
+    feature_columns: str = Form(""),
+    feature_types: str = Form(""),
+    target_column: str = Form(""),
     input_shape: str = Form(""),
     output_shape: str = Form(""),
     output_labels: str = Form(""),
@@ -321,6 +348,11 @@ async def upload_model(
         "task_type": task_type,
         "framework": framework,
         "category": category,
+        "input_type": input_type.strip(),
+        "output_type": output_type.strip(),
+        "feature_columns": _parse_csv(feature_columns) if feature_columns else [],
+        "feature_types": _parse_csv(feature_types) if feature_types else [],
+        "target_column": target_column.strip(),
         "input_shape": _parse_csv(input_shape) if input_shape else [],
         "output_shape": _parse_csv(output_shape) if output_shape else [],
         "output_labels": _parse_csv(output_labels) if output_labels else [],
@@ -356,6 +388,22 @@ async def upload_model(
                     metadata["evaluation_metrics"] = clean_metrics
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid evaluation_metrics JSON format")
+
+    defaults = TASK_IO_DEFAULTS.get(task_type, {})
+    if not metadata["input_type"]:
+        metadata["input_type"] = defaults.get("input_type", "")
+    if not metadata["output_type"]:
+        metadata["output_type"] = defaults.get("output_type", "")
+
+    is_classification_task = "classification" in task_type.lower()
+    if is_classification_task and not metadata["output_labels"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Output labels are required for classification tasks",
+        )
+
+    if task_type.lower() == "regression":
+        metadata["output_labels"] = []
 
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "processing", "message": "Uploading model to IPFS"}
