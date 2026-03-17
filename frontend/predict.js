@@ -10,6 +10,7 @@ const predictImage = document.getElementById("predictImage");
 const jsonInputLabel = document.getElementById("jsonInputLabel");
 const imageInputLabel = document.getElementById("imageInputLabel");
 const predictResult = document.getElementById("predictResult");
+const predictVisual = document.getElementById("predictVisual");
 
 let models = [];
 
@@ -106,6 +107,43 @@ async function fetchModels() {
   renderModelOptions();
 }
 
+function renderClearPrediction(payload, model) {
+  const prediction = payload?.prediction || {};
+  const lines = [];
+
+  if (payload?.local_model_path) {
+    lines.push(`Using local model: ${payload.local_model_path}`);
+  }
+
+  if (prediction?.predicted_label) {
+    const probs = prediction?.probabilities || {};
+    const confidence = typeof probs[prediction.predicted_label] === "number"
+      ? `${(probs[prediction.predicted_label] * 100).toFixed(2)}%`
+      : "N/A";
+    lines.push(`Predicted class: ${prediction.predicted_label}`);
+    lines.push(`Confidence: ${confidence}`);
+  } else if (typeof prediction?.value === "number") {
+    lines.push(`Predicted value: ${prediction.value}`);
+  } else if (typeof prediction?.text === "string" && prediction.text.trim()) {
+    lines.push(`Predicted text: ${prediction.text}`);
+  } else if (typeof prediction?.generated_text === "string" && prediction.generated_text.trim()) {
+    lines.push(`Generated text: ${prediction.generated_text}`);
+  } else if (typeof prediction?.answer === "string" && prediction.answer.trim()) {
+    lines.push(`Answer: ${prediction.answer}`);
+  } else {
+    lines.push(`Prediction completed for model: ${model?.name || payload?.model_id || "Unknown"}`);
+  }
+
+  const imageUrl = prediction?.image_url || payload?.image_url;
+  if (imageUrl && predictVisual) {
+    predictVisual.innerHTML = `<p><b>Generated image output:</b></p><img src="${imageUrl}" alt="Prediction output" style="max-width:100%;border-radius:8px;border:1px solid #d1d5db;" />`;
+  } else if (predictVisual) {
+    predictVisual.innerHTML = "";
+  }
+
+  predictResult.textContent = lines.join("\n");
+}
+
 async function buySelectedModel() {
   const model = selectedModel();
   if (!model) return;
@@ -119,10 +157,12 @@ async function buySelectedModel() {
       throw new Error(payload.detail || "Buy failed");
     }
 
-    predictResult.textContent = `Bought model ${model.id}. Local path: ${payload.local_model_path}`;
+    predictResult.textContent = `Model bought successfully.\nLocal path: ${payload.local_model_path}`;
+    if (predictVisual) predictVisual.innerHTML = "";
     await fetchModels();
   } catch (err) {
     predictResult.textContent = `Buy failed: ${err.message}`;
+    if (predictVisual) predictVisual.innerHTML = "";
   } finally {
     buySelectedBtn.disabled = false;
     buySelectedBtn.textContent = "Buy Selected Model";
@@ -137,12 +177,14 @@ predictForm.addEventListener("submit", async (event) => {
   const model = selectedModel();
   if (!model) {
     predictResult.textContent = "Select a model first.";
+    if (predictVisual) predictVisual.innerHTML = "";
     return;
   }
 
   const isCnn = String(model.model_type || "").toUpperCase().includes("CNN");
   if (!model.purchased) {
     predictResult.textContent = "Buy the model first."
+    if (predictVisual) predictVisual.innerHTML = "";
     return;
   }
 
@@ -153,6 +195,7 @@ predictForm.addEventListener("submit", async (event) => {
       const file = predictImage.files && predictImage.files[0];
       if (!file) {
         predictResult.textContent = "Please upload an image for CNN prediction.";
+        if (predictVisual) predictVisual.innerHTML = "";
         return;
       }
 
@@ -168,6 +211,7 @@ predictForm.addEventListener("submit", async (event) => {
         parsedInput = JSON.parse(predictInput.value);
       } catch {
         predictResult.textContent = "Input must be valid JSON array.";
+        if (predictVisual) predictVisual.innerHTML = "";
         return;
       }
 
@@ -183,9 +227,10 @@ predictForm.addEventListener("submit", async (event) => {
       throw new Error(payload.detail || "Prediction failed");
     }
 
-    predictResult.textContent = JSON.stringify(payload, null, 2);
+    renderClearPrediction(payload, model);
   } catch (err) {
     predictResult.textContent = `Prediction failed: ${err.message}`;
+    if (predictVisual) predictVisual.innerHTML = "";
   }
 });
 
