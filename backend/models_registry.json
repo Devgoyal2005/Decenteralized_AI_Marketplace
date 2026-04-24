@@ -33,8 +33,10 @@
       "metadata_ipfs_hash": "QmUkSr9FYKoCb23kSErWUmqrPs21PWJQT9eAGH6Z2R1JcP",
       "metadata_gateway_url": "https://gateway.pinata.cloud/ipfs/QmUkSr9FYKoCb23kSErWUmqrPs21PWJQT9eAGH6Z2R1JcP",
       "purchased": true,
-      "downloaded_at": "2026-03-16T09:13:31.119230Z",
-      "local_model_path": "D:\\Decenteralized_AI_Marketplace\\backend\\downloaded_models\\QmcoEtQvsUoJoTsbjjPq9P5GTbKrXPTX6svbnGjcLQK92A.h5"
+      "local_model_path": "D:\\Decenteralized_AI_Marketplace\\backend\\downloaded_models\\QmcoEtQvsUoJoTsbjjPq9P5GTbKrXPTX6svbnGjcLQK92A.h5",
+      "downloaded_at": "2026-03-19T09:02:59.392567Z",
+      "runtime_passkey": "s6C3O_36WjBnoPgr",
+      "passkey_generated_at": "2026-03-19T09:02:59.394912Z"
     },
     {
       "id": "model-dbfd521822",

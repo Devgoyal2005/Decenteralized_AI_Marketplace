@@ -1,0 +1,278 @@
+# Decentralized AI Marketplace — Full Review, Roadmap & Roast
+
+---
+
+## 🔍 What You Actually Have (Honest Assessment)
+
+| Layer | What Exists | Quality |
+|---|---|---|
+| Frontend | 5-page vanilla HTML/CSS/JS | Functional, minimal, ugly |
+| Backend | FastAPI with 939 lines | Solid structure, good patterns |
+| Storage | IPFS via Pinata + local JSON | Works, but fragile |
+| DB | Neon PostgreSQL (passkeys only) | Underused |
+| Inference | SHA256 hash disguised as AI | 💀 Fake |
+| Auth | `window.prompt()` for buyer name | 💀 Not auth |
+| Payments | None | 💀 Zero |
+| Blockchain | None | 💀 Zero |
+
+---
+
+## 🔥 The Roast (You Asked For It)
+
+**Your "decentralized" marketplace is about as decentralized as a pizza order.**
+
+1. **`window.prompt()` is your auth system.** A user types their name. That's it. Anyone can type anyone's name and "buy" under their identity. You store it in `localStorage`. This isn't auth — this is a guestbook from 2003.
+
+2. **The AI inference is a lie.** `_predict_labels` runs SHA256 on the IPFS hash and input sum. Your model files literally do nothing. A user uploads a 500MB PyTorch model, pays for it, downloads it locally, and your code runs `hashlib.sha256` on a string. **The model file is never opened, never loaded, never touched.** You could replace every model with an empty text file and predictions would be identical.
+
+3. **"Decentralized" but runs on your single `http://127.0.0.1:8001`.** If your laptop closes, the marketplace dies. That's not decentralized — that's a localhost project with Pinata bolted on.
+
+4. **models_registry.json is your "database".** You're running concurrent writes to a flat JSON file with no locking. Two simultaneous uploads = race condition = corrupted registry.
+
+5. **The passkey system gives away the passkey in plaintext in the buy response.** `"passkey": runtime_passkey` — you return it in the HTTP response and store it in `sessionStorage`. Anyone with DevTools can see it. The DB verification is correct, but the delivery mechanism is wide open.
+
+6. **`allow_origins=["*"]` with `allow_credentials=True`.** This literally doesn't work (browsers reject it) AND it's a security hole. Pick one.
+
+7. **The frontend renders `m.name` directly into `innerHTML`.** If a model name contains `<script>alert(1)</script>` — congratulations, you have stored XSS.
+
+---
+
+## ✅ What Is Genuinely Good
+
+- The **async job system** for uploads (background tasks + job polling) is the right pattern.
+- **Pinata retry logic** with exponential backoff is solid engineering.
+- **Duplicate hash detection** in the registry prevents re-uploading the same model.
+- The IPFS + metadata JSON dual-pin approach is correct Web3 thinking.
+- The **passkey DB lookup** (not just in-memory comparison) is good.
+- `_normalized_database_url()` handling Neon URL quirks is a nice defensive touch.
+
+---
+
+## 🗺️ Phased Roadmap
+
+### Phase 1 — Fix the Obvious Holes (Do This First, ~2 weeks)
+
+**Priority: Stop the embarrassing things.**
+
+| Task | Why |
+|---|---|
+| Replace `window.prompt()` with MetaMask `eth_requestAccounts` | Wallet = identity. Free, instant, real auth. |
+| Replace JSON file with PostgreSQL for full registry | Atomic writes, no race conditions |
+| Sanitize all innerHTML renders | Stop the XSS vulnerability |
+| Fix CORS: remove `allow_credentials=True` or restrict origins | Either works, not both |
+| Show price on model cards | You have `pricing.per_request` in the data — display it |
+
+**MetaMask auth is trivially easy:**
+```javascript
+const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+const walletAddress = accounts[0]; // This IS your user identity
+```
+No backend needed. No password. No session. Wallet address = buyer identity. Store it where you currently store the buyer name string. Done.
+
+---
+
+### Phase 2 — Sepolia Testnet Integration (~3-4 weeks)
+
+**The right minimal contract for your use case:**
+
+```solidity
+// ModelRegistry.sol
+contract ModelRegistry {
+    struct Model {
+        string ipfsHash;
+        string metadataHash;
+        address owner;
+        uint256 priceWei;
+        uint256 totalPurchases;
+    }
+    
+    struct Purchase {
+        address buyer;
+        uint256 timestamp;
+        uint256 nftTokenId; // links to NFT
+    }
+    
+    mapping(bytes32 => Model) public models;         // modelId => Model
+    mapping(address => bytes32[]) public userModels; // wallet => their uploaded models
+    mapping(bytes32 => mapping(address => Purchase)) public purchases; // modelId => buyer => Purchase
+    
+    event ModelRegistered(bytes32 indexed modelId, address indexed owner, string ipfsHash);
+    event ModelPurchased(bytes32 indexed modelId, address indexed buyer, uint256 nftTokenId);
+    
+    function registerModel(bytes32 modelId, string calldata ipfsHash, string calldata metadataHash, uint256 priceWei) external { ... }
+    function buyModel(bytes32 modelId) external payable { ... } // transfers ETH to owner, calls NFT mint
+    function hasPurchased(bytes32 modelId, address buyer) external view returns (bool) { ... }
+}
+```
+
+**What moves on-chain:**
+- Model registration (IPFS hash + owner wallet + price) → replaces `models_registry.json` + PostgreSQL registry
+- Purchase record (buyer wallet + timestamp) → replaces `model_passkeys` table
+- NFT mint on purchase → replaces passkey system entirely
+
+**What stays off-chain:**
+- The model file itself (stays on IPFS — this is correct, don't put files on-chain)
+- Inference calls (stays on backend)
+- Frontend routing
+
+**Why Sepolia specifically:**
+- Free ETH from faucet
+- Same EVM as mainnet — your code ports 1:1
+- Alchemy/Infura both support it free tier
+- MetaMask works out of the box
+
+**Tech stack for this phase:**
+- `ethers.js v6` in your frontend (CDN, no bundler needed — fits your vanilla JS constraint)
+- Hardhat for local dev + Sepolia deploy
+- OpenZeppelin `ERC721` for the NFT
+- Alchemy as your RPC provider
+
+---
+
+### Phase 3 — Model Purchase NFT (~2 weeks)
+
+**The NFT is your passkey replacement.** Instead of a random string, ownership proof is an NFT in the buyer's wallet.
+
+```
+Buy model → Smart contract verifies ETH payment → 
+Mints NFT to buyer wallet → NFT tokenId is the "passkey" →
+Backend verifies: does wallet X own NFT tokenId Y for model Z?
+```
+
+**NFT metadata (stored as JSON on Pinata):**
+```json
+{
+  "name": "ResNet50 Image Classifier — License #47",
+  "description": "Grants 1000 inference calls on model model-abc123",
+  "image": "ipfs://Qm...",  
+  "attributes": [
+    { "trait_type": "Model ID", "value": "model-abc123" },
+    { "trait_type": "Total Uses", "value": 1000 },
+    { "trait_type": "Purchased At", "value": "2026-04-23" },
+    { "trait_type": "Model Owner", "value": "0x742d35..." }
+  ]
+}
+```
+
+**Usage limiting (the interesting part):**
+- NFT has `maxUses: 1000` stored on-chain
+- Each prediction call → backend calls `contract.recordUse(tokenId)` → increments counter
+- When `usedCount >= maxUses` → NFT is "expired", inference is blocked
+- This turns the NFT into a **metered license** — very defensible as a product
+
+---
+
+### Phase 4 — Real Inference (~4-6 weeks, parallel with Phase 2-3)
+
+**This is where you stop lying to your users.**
+
+The simplest path: **ONNX Runtime in Python**
+
+```python
+import onnxruntime as ort
+import numpy as np
+
+def _predict_labels_real(local_model_path: str, input_vector: List[float], labels: List[str]):
+    session = ort.InferenceSession(local_model_path)
+    input_name = session.get_inputs()[0].name
+    input_array = np.array(input_vector, dtype=np.float32).reshape(session.get_inputs()[0].shape)
+    outputs = session.run(None, {input_name: input_array})
+    probabilities = softmax(outputs[0][0])
+    return dict(zip(labels, probabilities.tolist()))
+```
+
+**The problem:** You need models actually in ONNX format. Right now anyone uploads anything — `.pkl`, `.h5`, `.pt`, `.bin`. You need:
+1. Upload validation: detect and reject non-ONNX files (or convert them)
+2. Session caching: don't reload the model on every request (expensive)
+3. Input shape enforcement: your schema already has `input_shape` — use it
+
+**Session cache pattern:**
+```python
+_onnx_sessions: Dict[str, ort.InferenceSession] = {}
+
+def _get_session(local_model_path: str) -> ort.InferenceSession:
+    if local_model_path not in _onnx_sessions:
+        _onnx_sessions[local_model_path] = ort.InferenceSession(local_model_path)
+    return _onnx_sessions[local_model_path]
+```
+
+---
+
+### Phase 5 — Frontend Enhancement (Parallel, ~1-2 weeks)
+
+**Keep HTML/CSS/JS. Make it not look like 2012.**
+
+Key improvements needed:
+1. **Wallet connect button** in the nav — shows truncated address `0x742d...c3f1` when connected
+2. **Model cards need prices** — right now $0 / free is shown (nothing). Show ETH price.
+3. **"My Models" dashboard** — filter by `userModels[walletAddress]` from contract
+4. **Purchase flow modal** — don't use `alert()` and `prompt()`. Build actual modals.
+5. **Transaction status** — show pending/confirmed state for blockchain txns
+6. **NFT gallery** — show owned model licenses with usage meters
+
+**No framework needed. Just:**
+- `ethers.js` (CDN import, ~300KB)  
+- Better CSS — your current `styles.css` is 6.8KB with no animations, no gradients, no visual hierarchy
+
+---
+
+## 🔮 The Vision (Honest Version)
+
+> "Completely decentralized, hosted in decentralized cloud, running AI models in decentralized cloud, managed by multiple nodes"
+
+Here's the reality check:
+
+### What's Achievable Near-Term (6 months)
+- ✅ On-chain model registry + purchases (Sepolia → mainnet)
+- ✅ NFT-based metered licenses  
+- ✅ Wallet auth replacing prompt()
+- ✅ ONNX inference (real, not fake)
+- ✅ Decentralized frontend (IPFS/Fleek hosting)
+
+### What's Hard (12-24 months, requires real research)
+- ⚠️ **Decentralized compute** — Akash runs Docker containers, not arbitrary GPU jobs. You need your backend containerized and the inference API deployed there, with automatic node selection. This is solvable but non-trivial.
+- ⚠️ **Multi-node coordination** — who decides which Akash node runs which inference? You need an oracle or a coordinator contract. This is a research problem.
+
+### What's Currently Impossible / Very Far (3+ years)
+- 🔴 **Decentralized training** — Federated learning across nodes with model aggregation is an active research area. Bacalhau helps with batch jobs but not interactive training.
+- 🔴 **"Managed by multiple nodes like blockchain"** — This is essentially what projects like Bittensor, Ritual, and Gensyn are spending tens of millions of VC money on and still haven't fully solved. You're describing a Layer-1 protocol, not a product feature.
+
+**The honest ceiling:** You can build a legitimately decentralized marketplace where:  
+**Storage is decentralized (IPFS) + Ownership is decentralized (Ethereum) + Frontend is decentralized (Fleek/IPFS) + Compute is... your FastAPI server on Akash (centralized-ish, but permissionless)**
+
+That's actually a defensible, real product. Don't let "not fully decentralized" stop you from shipping something real.
+
+---
+
+## 📋 Immediate Next Steps (Ordered)
+
+1. **Fix XSS** — sanitize innerHTML (30 minutes of work, do it now)
+2. **Add MetaMask connect** — replace `getBuyerIdentity()` with `eth_requestAccounts`
+3. **Migrate registry to PostgreSQL** — add a `models` table alongside `model_passkeys`
+4. **Write `ModelRegistry.sol`** on Sepolia testnet with Hardhat
+5. **Wire `ethers.js`** into homepage buy flow — MetaMask payment → transaction hash → backend confirmation
+6. **Add ONNX Runtime** to `requirements.txt`, implement `_get_session()` cache, add ONNX validation on upload
+7. **Design a real UI** — model cards with prices, wallet connected state, purchase modal
+
+---
+
+## Architecture: Target State (6 months)
+
+```
+Frontend (HTML/CSS/JS + ethers.js)
+    │
+    ├── MetaMask (wallet auth + signing)
+    │
+    ├── Sepolia Ethereum
+    │   ├── ModelRegistry.sol (model list, prices, purchase records)  
+    │   └── ModelNFT.sol (ERC721 with usage counter)
+    │
+    ├── IPFS / Pinata (model files + NFT metadata)
+    │
+    └── FastAPI Backend (inference only)
+        ├── Verifies NFT ownership via ethers.py / web3.py  
+        ├── Loads ONNX model from local cache
+        └── Returns real inference result
+```
+
+**The key insight:** Once you have the smart contract, you can **remove PostgreSQL entirely**. The blockchain IS your database for ownership and purchases. PostgreSQL only made sense as a placeholder.

@@ -10,12 +10,16 @@ import uuid
 import time
 import math
 import hashlib
+import secrets
 import requests
 from requests import RequestException
+import psycopg2
+from psycopg2.extras import RealDictCursor  
 
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_PATH = BASE_DIR / "models_registry.json"
 DOWNLOADED_MODELS_DIR = BASE_DIR / "downloaded_models"
+PROPOSALS_PATH = BASE_DIR / "proposals_registry.json"
 
 load_dotenv(BASE_DIR / ".env")
 
@@ -29,6 +33,15 @@ PINATA_JSON_URL = "https://api.pinata.cloud/pinning/pinJSONToIPFS"
 PINATA_CONNECT_TIMEOUT = int(os.getenv("PINATA_CONNECT_TIMEOUT", "30"))
 PINATA_READ_TIMEOUT = int(os.getenv("PINATA_READ_TIMEOUT", "600"))
 PINATA_UPLOAD_RETRIES = int(os.getenv("PINATA_UPLOAD_RETRIES", "2"))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:5500,http://localhost:5500,http://127.0.0.1:8001,http://localhost:8001",
+    ).split(",")
+    if origin.strip()
+]
 
 app = FastAPI(title="Model Upload API", version="1.0.0")
 
@@ -36,17 +49,31 @@ jobs: Dict[str, Dict[str, Any]] = {}
 
 app.add_middleware(
     CORSMiddleware,
-    # Explicit origins for local frontend servers
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _startup_init() -> None:
+    try:
+        _init_passkeys_table()
+    except Exception as exc:
+        print(f"[WARN] Failed to initialize DB table model_passkeys: {exc}")
+    try:
+        _init_models_table()
+    except Exception as exc:
+        print(f"[WARN] Failed to initialize DB table models_registry: {exc}")
+    try:
+        _init_proposals_table()
+    except Exception as exc:
+        print(f"[WARN] Failed to initialize DB table proposals_registry: {exc}")
+    try:
+        _bootstrap_json_registries_to_db()
+    except Exception as exc:
+        print(f"[WARN] Failed to bootstrap JSON registries into DB: {exc}")
 
 
 def _ensure_registry() -> None:
@@ -67,6 +94,20 @@ def _ensure_downloads_dir() -> None:
     DOWNLOADED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _ensure_proposals_registry() -> None:
+    if not PROPOSALS_PATH.exists():
+        PROPOSALS_PATH.write_text(json.dumps({"proposals": []}, indent=2), encoding="utf-8")
+
+
+def _read_proposals_registry() -> Dict[str, Any]:
+    _ensure_proposals_registry()
+    return json.loads(PROPOSALS_PATH.read_text(encoding="utf-8"))
+
+
+def _write_proposals_registry(registry: Dict[str, Any]) -> None:
+    PROPOSALS_PATH.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+
 def _find_model_index(models: List[Dict[str, Any]], model_id: str) -> int:
     for idx, model in enumerate(models):
         if str(model.get("id", "")) == model_id:
@@ -77,6 +118,422 @@ def _find_model_index(models: List[Dict[str, Any]], model_id: str) -> int:
 def _model_extension(file_name: str) -> str:
     suffix = Path(file_name).suffix.strip()
     return suffix if suffix else ".bin"
+
+
+def _generate_runtime_passkey() -> str:
+    return secrets.token_urlsafe(12)
+
+
+def _public_model_view(model: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(model)
+    sanitized.pop("runtime_passkey", None)
+    return sanitized
+
+
+def _recompute_proposal_acceptance(proposals: List[Dict[str, Any]]) -> None:
+    max_upvotes = max((int(p.get("upvotes", 0)) for p in proposals), default=0)
+    for proposal in proposals:
+        proposal["accepted"] = bool(max_upvotes > 0 and int(proposal.get("upvotes", 0)) == max_upvotes)
+
+
+def _normalized_database_url() -> str:
+    if not DATABASE_URL:
+        return ""
+    # Tolerate a common typo in copied Neon URLs without altering valid values.
+    url = DATABASE_URL
+    url = url.replace("channel_binding=requir&", "channel_binding=require&")
+    if url.endswith("channel_binding=requir"):
+        url = f"{url[:-len('channel_binding=requir')]}channel_binding=require"
+    return url
+
+
+def _db_available() -> bool:
+    return bool(_normalized_database_url())
+
+
+def _get_db_connection():
+    db_url = _normalized_database_url()
+    if not db_url:
+        return None
+    return psycopg2.connect(db_url)
+
+
+def _init_passkeys_table() -> None:
+    conn = _get_db_connection()
+    if conn is None:
+        return
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_passkeys (
+                    id BIGSERIAL PRIMARY KEY,
+                    model_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    model_owner TEXT,
+                    buyer TEXT NOT NULL,
+                    passkey TEXT NOT NULL,
+                    purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (model_id, passkey)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_passkeys_model_id
+                ON model_passkeys(model_id);
+                """
+            )
+    conn.close()
+
+
+def _init_models_table() -> None:
+    """Create the models_registry table in PostgreSQL if it does not exist."""
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS models_registry (
+                    id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL,
+                    ipfs_hash TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_models_registry_ipfs
+                ON models_registry(ipfs_hash);
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_models_registry_ipfs
+                ON models_registry(ipfs_hash)
+                WHERE ipfs_hash IS NOT NULL AND ipfs_hash <> '';
+                """
+            )
+    conn.close()
+
+
+def _upsert_model_in_db(model: Dict[str, Any]) -> None:
+    """Insert or update a model record in the PostgreSQL models_registry table."""
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    model_id = str(model.get("id", "")).strip()
+    ipfs_hash = str(model.get("ipfs_hash", "")).strip()
+    if not model_id:
+        conn.close()
+        return
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO models_registry (id, data, ipfs_hash, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    data = EXCLUDED.data,
+                    ipfs_hash = EXCLUDED.ipfs_hash,
+                    updated_at = NOW();
+                """,
+                (model_id, json.dumps(model), ipfs_hash),
+            )
+    conn.close()
+
+
+def _read_models_from_db() -> Optional[List[Dict[str, Any]]]:
+    """Read all models from PostgreSQL. Returns None if DB is unavailable."""
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT data FROM models_registry ORDER BY updated_at DESC;"
+                )
+                rows = cur.fetchall()
+        conn.close()
+        models = []
+        for row in rows:
+            data = row["data"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            models.append(data)
+        return models
+    except Exception:
+        conn.close()
+        return None
+
+
+def _find_model_by_id_from_db(model_id: str) -> Optional[Dict[str, Any]]:
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT data FROM models_registry WHERE id = %s LIMIT 1;",
+                    (model_id,),
+                )
+                row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        data = row["data"]
+        return json.loads(data) if isinstance(data, str) else data
+    except Exception:
+        conn.close()
+        return None
+
+
+def _find_model_by_ipfs_from_db(ipfs_hash: str) -> Optional[Dict[str, Any]]:
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT data
+                    FROM models_registry
+                    WHERE ipfs_hash = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1;
+                    """,
+                    (ipfs_hash,),
+                )
+                row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        data = row["data"]
+        return json.loads(data) if isinstance(data, str) else data
+    except Exception:
+        conn.close()
+        return None
+
+
+def _get_all_models() -> List[Dict[str, Any]]:
+    if _db_available():
+        db_models = _read_models_from_db()
+        if db_models is not None:
+            return db_models
+    registry = _read_registry()
+    return registry.get("models", [])
+
+
+def _save_model_record(model: Dict[str, Any]) -> None:
+    if _db_available():
+        _upsert_model_in_db(model)
+        return
+
+    registry = _read_registry()
+    models = registry.setdefault("models", [])
+    model_id = str(model.get("id", "")).strip()
+    idx = _find_model_index(models, model_id)
+    if idx >= 0:
+        models[idx] = model
+    else:
+        models.append(model)
+    registry["models"] = models
+    _write_registry(registry)
+
+
+def _init_proposals_table() -> None:
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS proposals_registry (
+                    id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL,
+                    upvotes INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_proposals_registry_rank
+                ON proposals_registry(upvotes DESC, created_at DESC);
+                """
+            )
+    conn.close()
+
+
+def _insert_proposal_in_db(proposal: Dict[str, Any]) -> None:
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO proposals_registry (id, data, upvotes, created_at, updated_at)
+                VALUES (%s, %s, %s, NOW(), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    data = EXCLUDED.data,
+                    upvotes = EXCLUDED.upvotes,
+                    updated_at = NOW();
+                """,
+                (
+                    str(proposal.get("id", "")).strip(),
+                    json.dumps(proposal),
+                    int(proposal.get("upvotes", 0)),
+                ),
+            )
+    conn.close()
+
+
+def _read_proposals_from_db() -> Optional[List[Dict[str, Any]]]:
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT data
+                    FROM proposals_registry
+                    ORDER BY upvotes DESC, created_at DESC;
+                    """
+                )
+                rows = cur.fetchall()
+        conn.close()
+        proposals: List[Dict[str, Any]] = []
+        for row in rows:
+            data = row["data"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            proposals.append(data)
+        return proposals
+    except Exception:
+        conn.close()
+        return None
+
+
+def _upvote_proposal_in_db(proposal_id: str) -> Optional[Dict[str, Any]]:
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT data FROM proposals_registry WHERE id = %s LIMIT 1;",
+                    (proposal_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    conn.close()
+                    return None
+
+                proposal = row["data"]
+                if isinstance(proposal, str):
+                    proposal = json.loads(proposal)
+
+                proposal["upvotes"] = int(proposal.get("upvotes", 0)) + 1
+
+                cur.execute(
+                    """
+                    UPDATE proposals_registry
+                    SET data = %s,
+                        upvotes = %s,
+                        updated_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (json.dumps(proposal), int(proposal["upvotes"]), proposal_id),
+                )
+        conn.close()
+        return proposal
+    except Exception:
+        conn.close()
+        return None
+
+
+def _bootstrap_json_registries_to_db() -> None:
+    if not _db_available():
+        return
+
+    # Backfill models once so existing local JSON data is preserved after DB switch.
+    try:
+        db_models = _read_models_from_db() or []
+        if not db_models:
+            local_models = _read_registry().get("models", [])
+            for model in local_models:
+                _upsert_model_in_db(model)
+    except Exception as exc:
+        print(f"[WARN] Model bootstrap skipped: {exc}")
+
+    # Backfill proposals once so proposal history is preserved.
+    try:
+        db_proposals = _read_proposals_from_db() or []
+        if not db_proposals:
+            local_proposals = _read_proposals_registry().get("proposals", [])
+            for proposal in local_proposals:
+                _insert_proposal_in_db(proposal)
+    except Exception as exc:
+        print(f"[WARN] Proposal bootstrap skipped: {exc}")
+
+
+def _store_passkey_in_db(
+    *,
+    model_id: str,
+    model_name: str,
+    model_owner: str,
+    buyer: str,
+    passkey: str,
+) -> None:
+    conn = _get_db_connection()
+    if conn is None:
+        return
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_passkeys (model_id, model_name, model_owner, buyer, passkey)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (model_id, passkey) DO NOTHING;
+                """,
+                (model_id, model_name, model_owner, buyer, passkey),
+            )
+    conn.close()
+
+
+def _is_passkey_valid_in_db(model_id: str, passkey: str) -> bool:
+    conn = _get_db_connection()
+    if conn is None:
+        return False
+
+    with conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM model_passkeys
+                WHERE model_id = %s AND passkey = %s
+                LIMIT 1;
+                """,
+                (model_id, passkey),
+            )
+            row = cur.fetchone()
+    conn.close()
+    return bool(row)
 
 
 def _flatten_to_floats(value: Any) -> List[float]:
@@ -269,21 +726,32 @@ def process_upload(job_id: str, file_bytes: bytes, file_filename: str, file_cont
 
         record["verified"] = True  # Mark as verified since we just uploaded successfully
 
-        registry = _read_registry()
-        existing_models = registry.setdefault("models", [])
-
-        # Prevent duplicate records for the same content hash.
-        # If hash exists, replace it with the latest metadata.
-        existing_index = next(
-            (idx for idx, m in enumerate(existing_models) if m.get("ipfs_hash") == file_ipfs_hash),
-            None,
-        )
-        if existing_index is not None:
-            existing_models[existing_index] = record
+        if _db_available():
+            try:
+                existing_model = _find_model_by_ipfs_from_db(file_ipfs_hash)
+                if existing_model and existing_model.get("id"):
+                    model_id = str(existing_model.get("id"))
+                    record["id"] = model_id
+                _upsert_model_in_db(record)
+            except Exception as db_exc:
+                jobs[job_id] = {"status": "failed", "error": f"Failed to save model in DB: {db_exc}"}
+                return
         else:
-            existing_models.append(record)
+            registry = _read_registry()
+            existing_models = registry.setdefault("models", [])
 
-        _write_registry(registry)
+            # Prevent duplicate records for the same content hash.
+            # If hash exists, replace it with the latest metadata.
+            existing_index = next(
+                (idx for idx, m in enumerate(existing_models) if m.get("ipfs_hash") == file_ipfs_hash),
+                None,
+            )
+            if existing_index is not None:
+                existing_models[existing_index] = record
+            else:
+                existing_models.append(record)
+
+            _write_registry(registry)
 
         jobs[job_id] = {
             "status": "completed",
@@ -432,9 +900,8 @@ def get_upload_status(job_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/models/{model_id}/buy")
-def buy_model(model_id: str) -> Dict[str, Any]:
-    registry = _read_registry()
-    models = registry.get("models", [])
+def buy_model(model_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    models = _get_all_models()
     model_idx = _find_model_index(models, model_id)
     if model_idx < 0:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -462,33 +929,54 @@ def buy_model(model_id: str) -> Dict[str, Any]:
         except RequestException as exc:
             raise HTTPException(status_code=504, detail=f"Network error while downloading model: {str(exc)}")
 
+    runtime_passkey = _generate_runtime_passkey()
+    buyer = str((body or {}).get("buyer", "")).strip() or "Anonymous Buyer"
+    owner_name = str(model.get("creator", "")).strip() or "Unknown Owner"
+    model_name = str(model.get("name", "")).strip() or "Unnamed Model"
+
+    try:
+        _store_passkey_in_db(
+            model_id=model_id,
+            model_name=model_name,
+            model_owner=owner_name,
+            buyer=buyer,
+            passkey=runtime_passkey,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to store passkey in DB: {exc}")
+
     model["purchased"] = True
     model["downloaded_at"] = datetime.utcnow().isoformat() + "Z"
     model["local_model_path"] = str(local_path)
-    models[model_idx] = model
-    registry["models"] = models
-    _write_registry(registry)
+    model["runtime_passkey"] = runtime_passkey
+    model["passkey_generated_at"] = datetime.utcnow().isoformat() + "Z"
+    try:
+        _save_model_record(model)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update model purchase status: {exc}")
 
     return {
         "success": True,
         "message": "Model purchased and downloaded locally",
         "model_id": model_id,
+        "model_name": model_name,
+        "owner": owner_name,
+        "buyer": buyer,
         "ipfs_hash": ipfs_hash,
         "local_model_path": str(local_path),
+        "passkey": runtime_passkey,
     }
 
 
 @app.get("/api/models/purchased")
 def list_purchased_models() -> Dict[str, Any]:
-    registry = _read_registry()
-    purchased = [m for m in registry.get("models", []) if m.get("purchased")]
+    purchased = [_public_model_view(m) for m in _get_all_models() if m.get("purchased")]
     return {"models": purchased}
 
 
 @app.post("/api/models/{model_id}/predict")
 def predict_with_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    registry = _read_registry()
-    models = registry.get("models", [])
+    models = _get_all_models()
     model_idx = _find_model_index(models, model_id)
     if model_idx < 0:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -499,6 +987,26 @@ def predict_with_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Model must be bought first")
     if not Path(local_model_path).exists():
         raise HTTPException(status_code=400, detail="Local model file missing. Buy again to download it")
+
+    provided_passkey = str(body.get("passkey", "")).strip()
+    if not provided_passkey:
+        raise HTTPException(status_code=400, detail="Passkey is required to run this model")
+
+    db_url = _normalized_database_url()
+    if db_url:
+        try:
+            if not _is_passkey_valid_in_db(model_id, provided_passkey):
+                raise HTTPException(status_code=403, detail="Invalid passkey")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Passkey verification failed: {exc}")
+    else:
+        expected_passkey = str(model.get("runtime_passkey", "")).strip()
+        if not expected_passkey:
+            raise HTTPException(status_code=400, detail="Passkey missing for this model. Buy again to generate one")
+        if provided_passkey != expected_passkey:
+            raise HTTPException(status_code=403, detail="Invalid passkey")
 
     if "input" not in body:
         raise HTTPException(status_code=400, detail="Request body must include 'input'")
@@ -543,9 +1051,12 @@ def predict_with_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.post("/api/models/{model_id}/predict-image")
-async def predict_with_image(model_id: str, image: UploadFile = File(...)) -> Dict[str, Any]:
-    registry = _read_registry()
-    models = registry.get("models", [])
+async def predict_with_image(
+    model_id: str,
+    image: UploadFile = File(...),
+    passkey: str = Form(...),
+) -> Dict[str, Any]:
+    models = _get_all_models()
     model_idx = _find_model_index(models, model_id)
     if model_idx < 0:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -556,6 +1067,26 @@ async def predict_with_image(model_id: str, image: UploadFile = File(...)) -> Di
         raise HTTPException(status_code=400, detail="Model must be bought first")
     if not Path(local_model_path).exists():
         raise HTTPException(status_code=400, detail="Local model file missing. Buy again to download it")
+
+    provided_passkey = str(passkey or "").strip()
+    if not provided_passkey:
+        raise HTTPException(status_code=400, detail="Passkey is required to run this model")
+
+    db_url = _normalized_database_url()
+    if db_url:
+        try:
+            if not _is_passkey_valid_in_db(model_id, provided_passkey):
+                raise HTTPException(status_code=403, detail="Invalid passkey")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Passkey verification failed: {exc}")
+    else:
+        expected_passkey = str(model.get("runtime_passkey", "")).strip()
+        if not expected_passkey:
+            raise HTTPException(status_code=400, detail="Passkey missing for this model. Buy again to generate one")
+        if provided_passkey != expected_passkey:
+            raise HTTPException(status_code=403, detail="Invalid passkey")
 
     image_bytes = await image.read()
     if not image_bytes:
@@ -607,8 +1138,7 @@ def _verify_model_on_pinata(gateway_url: str) -> bool:
 
 @app.get("/api/models")
 def list_models() -> Dict[str, Any]:
-    registry = _read_registry()
-    all_models = registry.get("models", [])
+    all_models = _get_all_models()
 
     # Deduplicate by IPFS hash first (same content), fallback to id.
     deduped: Dict[str, Dict[str, Any]] = {}
@@ -629,17 +1159,140 @@ def list_models() -> Dict[str, Any]:
 
     all_models = list(deduped.values())
 
-    verified_models = []
+    deduped_models: List[Dict[str, Any]] = []
     for model in all_models:
+        gateway_url = str(model.get("gateway_url", "")).strip()
         if model.get("verified"):
-            verified_models.append(model)
-        elif _verify_model_on_pinata(model["gateway_url"]):
+            deduped_models.append(model)
+            continue
+
+        if gateway_url and _verify_model_on_pinata(gateway_url):
             model["verified"] = True
-            verified_models.append(model)
 
-    # Update registry with deduplicated verified models
-    registry["models"] = verified_models
-    _write_registry(registry)
-    return {"models": verified_models}
+        # Keep model in listing even if verification is temporarily failing.
+        deduped_models.append(model)
+
+    return {"models": [_public_model_view(model) for model in deduped_models]}
 
 
+@app.get("/api/proposals")
+def list_proposals() -> Dict[str, Any]:
+    if _db_available():
+        proposals = _read_proposals_from_db()
+        if proposals is None:
+            raise HTTPException(status_code=500, detail="Failed to read proposals from DB")
+        _recompute_proposal_acceptance(proposals)
+        for proposal in proposals:
+            _insert_proposal_in_db(proposal)
+        return {"proposals": proposals}
+
+    registry = _read_proposals_registry()
+    proposals = registry.get("proposals", [])
+    _recompute_proposal_acceptance(proposals)
+    proposals_sorted = sorted(
+        proposals,
+        key=lambda p: (int(p.get("upvotes", 0)), str(p.get("created_at", ""))),
+        reverse=True,
+    )
+    registry["proposals"] = proposals
+    _write_proposals_registry(registry)
+    return {"proposals": proposals_sorted}
+
+
+@app.post("/api/proposals")
+def submit_proposal(body: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(body.get("title", "")).strip()
+    summary = str(body.get("summary", "")).strip()
+    proposer = str(body.get("proposer", "")).strip() or "Anonymous"
+    details = str(body.get("details", "")).strip()
+
+    if not title:
+        raise HTTPException(status_code=400, detail="Proposal title is required")
+    if not summary:
+        raise HTTPException(status_code=400, detail="Proposal summary is required")
+
+    proposal = {
+        "id": f"proposal-{uuid.uuid4().hex[:10]}",
+        "title": title,
+        "summary": summary,
+        "proposer": proposer,
+        "details": details,
+        "upvotes": 0,
+        "accepted": False,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    if _db_available():
+        try:
+            _insert_proposal_in_db(proposal)
+            proposals = _read_proposals_from_db() or []
+            _recompute_proposal_acceptance(proposals)
+            for item in proposals:
+                _insert_proposal_in_db(item)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to save proposal in DB: {exc}")
+    else:
+        registry = _read_proposals_registry()
+        proposals = registry.setdefault("proposals", [])
+        proposals.append(proposal)
+        _recompute_proposal_acceptance(proposals)
+        registry["proposals"] = proposals
+        _write_proposals_registry(registry)
+
+    return {
+        "success": True,
+        "message": "Proposal submitted successfully",
+        "proposal": proposal,
+    }
+
+
+@app.post("/api/proposals/{proposal_id}/upvote")
+def upvote_proposal(proposal_id: str) -> Dict[str, Any]:
+    if _db_available():
+        proposal = _upvote_proposal_in_db(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+
+        proposals = _read_proposals_from_db() or []
+        _recompute_proposal_acceptance(proposals)
+        for item in proposals:
+            _insert_proposal_in_db(item)
+
+        updated = next((p for p in proposals if str(p.get("id", "")).strip() == proposal_id), proposal)
+        return {
+            "success": True,
+            "message": "Upvote added",
+            "proposal_id": proposal_id,
+            "upvotes": int(updated.get("upvotes", 0)),
+            "accepted": updated.get("accepted", False),
+        }
+
+    registry = _read_proposals_registry()
+    proposals = registry.setdefault("proposals", [])
+
+    target = None
+    for proposal in proposals:
+        if str(proposal.get("id", "")).strip() == proposal_id:
+            target = proposal
+            break
+
+    if target is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    target["upvotes"] = int(target.get("upvotes", 0)) + 1
+    _recompute_proposal_acceptance(proposals)
+
+    registry["proposals"] = proposals
+    _write_proposals_registry(registry)
+
+    return {
+        "success": True,
+        "message": "Upvote added",
+        "proposal_id": proposal_id,
+        "upvotes": target["upvotes"],
+        "accepted": target.get("accepted", False),
+    }
+
+@app.get("/test")
+def test_endpoint():
+    return {"message": "Test endpoint is working!"}

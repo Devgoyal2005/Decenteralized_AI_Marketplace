@@ -17,6 +17,17 @@ backend/.env
 backend/downloaded_models/
 backend/*.log
 
+# Node / Hardhat
+contracts/node_modules/
+contracts/cache/
+contracts/artifacts/
+contracts/deployment.json
+contracts/typechain-types/
+contracts/coverage/
+contracts/coverage.json
+contracts/.env
+contracts/.env.*
+
 # Editors/OS
 .vscode/
 .idea/

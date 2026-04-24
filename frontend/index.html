@@ -3,27 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Model Marketplace</title>
+  <meta name="description" content="DAMM — Decentralized AI Model Marketplace. Browse, buy, and run AI models stored on IPFS with wallet-based authentication." />
+  <title>DAMM — AI Model Marketplace</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="container">
-    <nav class="top-nav">
-      <a href="index.html" class="active">Home</a>
-      <a href="upload.html">Upload Model</a>
-      <a href="predict.html">Predict</a>
-    </nav>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <div>
+        <div class="brand">DAMM</div>
+        <div class="brand-sub">Decentralized AI Model Marketplace</div>
+      </div>
+      <nav class="site-actions">
+        <a href="index.html" class="active">Home</a>
+        <a href="upload.html">Upload</a>
+        <a href="predict.html">Predict</a>
+        <a href="contribute.html">Contribute</a>
+        <a href="know-more.html">Know More</a>
+        <!-- Wallet button injected by wallet.js -->
+      </nav>
+    </div>
+  </header>
 
-    <h1>Uploaded AI Models</h1>
-    <p class="sub">Browse all models pinned and stored by the backend registry.</p>
+  <main class="container">
+    <h1>AI Model Marketplace</h1>
+    <p class="sub">Browse all models pinned to IPFS. Connect your wallet to buy and run them.</p>
 
     <section>
-      <h2>Marketplace</h2>
-      <button id="refreshBtn">Refresh List</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+        <h2 style="margin:0;">Available Models</h2>
+        <button id="refreshBtn" class="secondary-btn" style="width:auto;">↻ Refresh</button>
+      </div>
       <div id="modelsList"></div>
     </section>
   </main>
 
-  <script src="home.js?v=3"></script>
+  <footer id="aboutSection" class="site-footer">
+    <div class="site-footer-inner">
+      <h3>About DAMM</h3>
+      <p>
+        DAMM is an open-source platform for publishing, discovering, buying, and running AI models
+        with IPFS-backed decentralized storage and MetaMask wallet authentication.
+      </p>
+      <p style="margin-top:6px;">
+        Current flow: Connect Wallet → Browse Models → Buy with wallet identity → Predict with runtime passkey.
+      </p>
+    </div>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.11.1/ethers.umd.min.js"></script>
+  <script src="contract-config.js"></script>
+  <script src="contract.js"></script>
+  <script src="wallet.js"></script>
+  <script src="home.js"></script>
 </body>
 </html>

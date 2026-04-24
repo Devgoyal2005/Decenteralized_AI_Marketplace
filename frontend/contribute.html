@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Submit and vote on community proposals to improve DAMM — the Decentralized AI Model Marketplace." />
+  <title>Contribute — DAMM</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <div>
+        <div class="brand">DAMM</div>
+        <div class="brand-sub">Decentralized AI Model Marketplace</div>
+      </div>
+      <nav class="site-actions">
+        <a href="index.html">Home</a>
+        <a href="upload.html">Upload</a>
+        <a href="predict.html">Predict</a>
+        <a href="contribute.html" class="active">Contribute</a>
+        <a href="know-more.html">Know More</a>
+        <!-- Wallet button injected by wallet.js -->
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <h1>Contribute to DAMM</h1>
+    <p class="sub">Submit open-source proposals. Everyone can view and upvote. The highest-voted proposals are marked accepted.</p>
+
+    <section class="contrib-layout">
+      <article class="contrib-panel">
+        <h2>Submit Proposal</h2>
+        <form id="proposalForm">
+          <label>Proposal Title*
+            <input type="text" id="proposalTitle" required placeholder="Example: Add real ONNX inference" />
+          </label>
+          <label>Your Wallet / Handle
+            <input type="text" id="proposalProposer" placeholder="0x… or dev_username" />
+          </label>
+          <label>Summary*
+            <textarea id="proposalSummary" required placeholder="What is being proposed and why?"></textarea>
+          </label>
+          <label>Implementation Details
+            <textarea id="proposalDetails" placeholder="Technical plan, timeline, modules impacted"></textarea>
+          </label>
+          <button type="submit">Submit Proposal</button>
+        </form>
+      </article>
+
+      <article class="contrib-panel">
+        <div class="contrib-list-header">
+          <h2>Community Proposals</h2>
+          <button id="refreshProposalsBtn" type="button" class="secondary-btn">↻ Refresh</button>
+        </div>
+        <div id="proposalList">Loading proposals...</div>
+      </article>
+    </section>
+  </main>
+
+  <footer id="aboutSection" class="site-footer">
+    <div class="site-footer-inner">
+      <h3>About DAMM</h3>
+      <p>
+        DAMM is built as an open-source ecosystem for decentralized AI model sharing.
+        The community roadmap is proposal-driven and publicly visible.
+      </p>
+    </div>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.11.1/ethers.umd.min.js"></script>
+  <script src="contract-config.js"></script>
+  <script src="contract.js"></script>
+  <script src="wallet.js"></script>
+  <script src="contribute.js"></script>
+</body>
+</html>

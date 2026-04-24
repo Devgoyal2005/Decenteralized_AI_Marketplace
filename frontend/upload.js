@@ -1,4 +1,9 @@
-const API_BASE_URLS = ["http://127.0.0.1:8001", "http://127.0.0.1:8000"];
+/**
+ * upload.js — DAMM Upload page
+ * Uses wallet.js for auto-filling creator wallet address.
+ */
+
+const API_BASE_URLS = ["http://127.0.0.1:8001"];
 let activeApiBaseUrl = API_BASE_URLS[0];
 
 const form = document.getElementById("uploadForm");
@@ -14,6 +19,22 @@ const outputLabelsField = document.getElementById("outputLabels");
 const featureColumnsField = document.getElementById("featureColumns");
 const featureTypesField = document.getElementById("featureTypes");
 const targetColumnField = document.getElementById("targetColumn");
+const creatorField = document.getElementById("creatorField");
+
+// Auto-fill creator from connected wallet
+function _autoFillCreator() {
+  if (!creatorField) return;
+  const addr = typeof getWalletAddress === "function" ? getWalletAddress() : null;
+  if (addr && !creatorField.value.trim()) {
+    creatorField.value = addr;
+  }
+}
+_autoFillCreator();
+window.addEventListener("walletConnected", (e) => {
+  if (creatorField && !creatorField.value.trim() && e.detail?.address) {
+    creatorField.value = e.detail.address;
+  }
+});
 
 const TASK_IO_PRESETS = {
   Classification: { input_type: "Image tensor", output_type: "Class probabilities (multi-class)" },
@@ -142,17 +163,32 @@ function createMetricRow(defaultType = "Accuracy", defaultValue = "") {
   const row = document.createElement("div");
   row.className = "metric-row";
 
-  const options = METRIC_TYPES
-    .map((metric) => `<option ${metric === defaultType ? "selected" : ""}>${metric}</option>`)
-    .join("");
+  const metricSelect = document.createElement("select");
+  metricSelect.className = "metric-type";
+  METRIC_TYPES.forEach((metric) => {
+    const option = document.createElement("option");
+    option.value = metric;
+    option.textContent = metric;
+    if (metric === defaultType) option.selected = true;
+    metricSelect.appendChild(option);
+  });
 
-  row.innerHTML = `
-    <select class="metric-type">${options}</select>
-    <input class="metric-value" type="number" step="0.0001" placeholder="Metric value" value="${defaultValue}" />
-    <button type="button" class="danger-btn">Remove</button>
-  `;
+  const metricInput = document.createElement("input");
+  metricInput.className = "metric-value";
+  metricInput.type = "number";
+  metricInput.step = "0.0001";
+  metricInput.placeholder = "Metric value";
+  metricInput.value = defaultValue;
 
-  row.querySelector(".danger-btn").addEventListener("click", () => row.remove());
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "danger-btn";
+  removeBtn.textContent = "Remove";
+  removeBtn.addEventListener("click", () => row.remove());
+
+  row.appendChild(metricSelect);
+  row.appendChild(metricInput);
+  row.appendChild(removeBtn);
   metricsContainer.appendChild(row);
 }
 
@@ -183,7 +219,16 @@ applyAutonomousIO();
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  result.textContent = "Starting upload...";
+
+  // Auto-fill creator from wallet if still empty
+  if (creatorField && !creatorField.value.trim()) {
+    const addr = typeof getWalletAddress === "function" ? getWalletAddress() : null;
+    if (addr) creatorField.value = addr;
+  }
+
+  const submitBtn = document.getElementById("uploadSubmitBtn");
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Uploading…"; }
+  result.textContent = "Starting upload…";
 
   try {
     const formData = new FormData(form);
@@ -236,12 +281,41 @@ form.addEventListener("submit", async (e) => {
         }
 
         if (statusPayload.status === "completed") {
-          result.textContent = `Upload completed! Model ID: ${statusPayload.model_id}\nIPFS Hash: ${statusPayload.ipfs_hash}\nGateway: ${statusPayload.gateway_url}`;
+          result.textContent = `Upload to IPFS completed. Registering on-chain...`;
+          try {
+             if (typeof getContract === "function") {
+                 const contract = await getContract();
+                 const priceRaw = form.querySelector('input[name="price_per_request"]')?.value || "0";
+                 const priceWei = priceRaw && Number(priceRaw) > 0 ? ethers.parseEther(priceRaw) : 0n;
+                 
+                 const tx = await contract.registerModel(
+                      statusPayload.model_id, 
+                      statusPayload.ipfs_hash || "CID", 
+                      "metadata", 
+                      priceWei
+                 );
+                 result.textContent = `Waiting for transaction confirmation...`;
+                 await tx.wait();
+                 result.textContent = `Upload completed! Model ID: ${statusPayload.model_id}\nIPFS Hash: ${statusPayload.ipfs_hash}\nGateway: ${statusPayload.gateway_url}\nOn-chain TX: ${tx.hash}`;
+                 if (typeof showToast === "function") showToast("Model registered on-chain!", "success");
+             } else {
+                 result.textContent = `Upload completed! Model ID: ${statusPayload.model_id}\nIPFS Hash: ${statusPayload.ipfs_hash}\nGateway: ${statusPayload.gateway_url}`;
+             }
+          } catch(err) {
+             console.error("On-chain registration error:", err);
+             result.textContent = `Upload completed, but on-chain registration failed: ${err.message}\nModel ID: ${statusPayload.model_id}`;
+             if (typeof showToast === "function") showToast("On-chain registration failed", "error");
+          }
+
           form.reset();
-          metricsContainer.innerHTML = "";
+          _autoFillCreator();
+          metricsContainer.textContent = "";
           createMetricRow("Accuracy", "");
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Upload Model to IPFS"; }
         } else if (statusPayload.status === "failed") {
           result.textContent = `Upload failed: ${statusPayload.error}`;
+          if (typeof showToast === "function") showToast("Upload failed", "error");
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Upload Model to IPFS"; }
         } else {
           result.textContent = `Status: ${statusPayload.status} - ${statusPayload.message || ""}`;
           setTimeout(pollStatus, 2000); // Poll every 2 seconds
@@ -254,5 +328,7 @@ form.addEventListener("submit", async (e) => {
     pollStatus();
   } catch (err) {
     result.textContent = `Error: ${err.message}`;
+    if (typeof showToast === "function") showToast(`Upload error: ${err.message}`, "error");
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Upload Model to IPFS"; }
   }
 });

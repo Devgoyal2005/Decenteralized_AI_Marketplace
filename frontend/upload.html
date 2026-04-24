@@ -3,24 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Upload Model</title>
+  <meta name="description" content="Upload your AI model to IPFS via DAMM. Set metadata, pricing, and evaluation metrics." />
+  <title>Upload Model — DAMM</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="container">
-    <nav class="top-nav">
-      <a href="index.html">Home</a>
-      <a href="upload.html" class="active">Upload Model</a>
-      <a href="predict.html">Predict</a>
-    </nav>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <div>
+        <div class="brand">DAMM</div>
+        <div class="brand-sub">Decentralized AI Model Marketplace</div>
+      </div>
+      <nav class="site-actions">
+        <a href="index.html">Home</a>
+        <a href="upload.html" class="active">Upload</a>
+        <a href="predict.html">Predict</a>
+        <a href="contribute.html">Contribute</a>
+        <a href="know-more.html">Know More</a>
+        <!-- Wallet button injected by wallet.js -->
+      </nav>
+    </div>
+  </header>
 
-    <h1>Upload AI Model to Pinata</h1>
-    <p class="sub">Upload any type of AI model with flexible metadata and metrics.</p>
+  <main class="container">
+    <h1>Upload AI Model</h1>
+    <p class="sub">Pin your model to IPFS and register it in the marketplace with full metadata.</p>
 
     <form id="uploadForm">
       <div class="grid">
-        <label>Model Name* <input type="text" name="name" required /></label>
-        <label>Creator Wallet <input type="text" name="creator" placeholder="0x..." /></label>
+        <label>Model Name* <input type="text" name="name" required placeholder="e.g. ResNet50 Image Classifier" /></label>
+        <label>Creator Wallet <input type="text" name="creator" id="creatorField" placeholder="0x… (auto-filled if wallet connected)" /></label>
         <label>Category
           <select name="category">
             <option>Computer Vision</option>
@@ -107,7 +119,7 @@
         <input type="hidden" name="feature_types" id="featureTypes" value="" />
         <input type="hidden" name="target_column" id="targetColumn" value="" />
         <label>Tags <input type="text" name="tags" placeholder="flowers,classification" /></label>
-        <label>Price per Request (ETH) <input type="number" step="0.0001" name="price_per_request" /></label>
+        <label>Price per Request (ETH) <input type="number" step="0.0001" name="price_per_request" placeholder="0.001" /></label>
         <label>Payment Currency
           <select name="payment_currency">
             <option>ETH</option>
@@ -128,18 +140,32 @@
         <div id="metricsContainer"></div>
       </section>
 
-      <label>Description* <textarea name="description" required></textarea></label>
+      <label>Description* <textarea name="description" required placeholder="Describe what your model does, its accuracy, and intended use."></textarea></label>
       <label>Model File* <input type="file" name="file" required /></label>
 
-      <button type="submit">Upload Model</button>
+      <button type="submit" id="uploadSubmitBtn">Upload Model to IPFS</button>
     </form>
 
     <section>
-      <h2>Result</h2>
+      <h2>Upload Status</h2>
       <pre id="result">No request yet.</pre>
     </section>
   </main>
 
+  <footer id="aboutSection" class="site-footer">
+    <div class="site-footer-inner">
+      <h3>About DAMM</h3>
+      <p>
+        DAMM helps developers share and consume AI models through a transparent marketplace workflow.
+        Upload your model with metadata and metrics, then let others buy and run it with passkey-protected inference.
+      </p>
+    </div>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.11.1/ethers.umd.min.js"></script>
+  <script src="contract-config.js"></script>
+  <script src="contract.js"></script>
+  <script src="wallet.js"></script>
   <script src="upload.js"></script>
 </body>
 </html>
