@@ -20,6 +20,9 @@ const featureColumnsField = document.getElementById("featureColumns");
 const featureTypesField = document.getElementById("featureTypes");
 const targetColumnField = document.getElementById("targetColumn");
 const creatorField = document.getElementById("creatorField");
+const uploadStage = document.getElementById("uploadStage");
+const uploadPercent = document.getElementById("uploadPercent");
+const uploadProgressBar = document.getElementById("uploadProgressBar");
 
 // Auto-fill creator from connected wallet
 function _autoFillCreator() {
@@ -212,6 +215,47 @@ function collectMetrics() {
     .filter((m) => m.metric_type && m.metric_value !== "" && !Number.isNaN(m.metric_value));
 }
 
+function setUploadProgress(percent, stageText) {
+  const clamped = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (uploadProgressBar) uploadProgressBar.style.width = `${clamped}%`;
+  if (uploadPercent) uploadPercent.textContent = `${Math.round(clamped)}%`;
+  if (uploadStage && stageText) uploadStage.textContent = stageText;
+}
+
+function uploadModelWithProgress(formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${activeApiBaseUrl}/api/models/upload`, true);
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const percent = (event.loaded / event.total) * 100;
+      onProgress(percent);
+    };
+
+    xhr.onerror = () => reject(new Error("Network error while uploading"));
+    xhr.ontimeout = () => reject(new Error("Upload request timed out"));
+    xhr.timeout = 1200000;
+
+    xhr.onload = () => {
+      let payload = {};
+      try {
+        payload = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+      } catch (_) {
+        payload = {};
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload);
+      } else {
+        reject(new Error(payload.detail || `Upload failed with status ${xhr.status}`));
+      }
+    };
+
+    xhr.send(formData);
+  });
+}
+
 createMetricRow("Accuracy", "");
 applyTaskPreset(taskTypeSelect?.value || "Classification");
 applyModelTypeHints();
@@ -229,6 +273,7 @@ form.addEventListener("submit", async (e) => {
   const submitBtn = document.getElementById("uploadSubmitBtn");
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Uploading…"; }
   result.textContent = "Starting upload…";
+  setUploadProgress(0, "Preparing upload");
 
   try {
     const formData = new FormData(form);
@@ -256,16 +301,11 @@ form.addEventListener("submit", async (e) => {
     const gpuRequired = form.querySelector("input[name='gpu_required']")?.checked || false;
     formData.set("gpu_required", String(gpuRequired));
 
-    const response = await apiFetch(`/api/models/upload`, {
-      method: "POST",
-      body: formData,
+    const payload = await uploadModelWithProgress(formData, (percent) => {
+      setUploadProgress(percent, "Uploading model file to backend");
     });
 
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.detail || "Upload failed");
-    }
+    setUploadProgress(100, "Upload request accepted");
 
     const jobId = payload.job_id;
     result.textContent = `Upload started. Job ID: ${jobId}. Checking status...`;
@@ -281,10 +321,11 @@ form.addEventListener("submit", async (e) => {
         }
 
         if (statusPayload.status === "completed") {
+          setUploadProgress(100, "IPFS upload complete");
           result.textContent = `Upload to IPFS completed. Registering on-chain...`;
           try {
-             if (typeof getContract === "function") {
-                 const contract = await getContract();
+             if (typeof getModelRegistryContract === "function") {
+               const contract = await getModelRegistryContract();
                  const priceRaw = form.querySelector('input[name="price_per_request"]')?.value || "0";
                  const priceWei = priceRaw && Number(priceRaw) > 0 ? ethers.parseEther(priceRaw) : 0n;
                  
@@ -311,12 +352,15 @@ form.addEventListener("submit", async (e) => {
           _autoFillCreator();
           metricsContainer.textContent = "";
           createMetricRow("Accuracy", "");
+          setUploadProgress(0, "Idle");
           if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Upload Model to IPFS"; }
         } else if (statusPayload.status === "failed") {
+          setUploadProgress(0, "Upload failed");
           result.textContent = `Upload failed: ${statusPayload.error}`;
           if (typeof showToast === "function") showToast("Upload failed", "error");
           if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Upload Model to IPFS"; }
         } else {
+          setUploadProgress(100, "Processing in backend/IPFS");
           result.textContent = `Status: ${statusPayload.status} - ${statusPayload.message || ""}`;
           setTimeout(pollStatus, 2000); // Poll every 2 seconds
         }
@@ -327,6 +371,7 @@ form.addEventListener("submit", async (e) => {
 
     pollStatus();
   } catch (err) {
+    setUploadProgress(0, "Upload failed");
     result.textContent = `Error: ${err.message}`;
     if (typeof showToast === "function") showToast(`Upload error: ${err.message}`, "error");
     if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Upload Model to IPFS"; }

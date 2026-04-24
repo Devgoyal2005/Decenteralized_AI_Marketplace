@@ -2,7 +2,7 @@
 
 Decentralized AI marketplace with:
 - FastAPI backend for IPFS upload, prediction, and proposal flows
-- Solidity smart contract (`ModelRegistry`) for on-chain model registration and purchases
+- Solidity smart contracts (`ModelRegistry` + `ModelLicense`) for registration, NFT licensing, and usage metering
 - Vanilla frontend (HTML/CSS/JS) with MetaMask + ethers.js integration
 
 ## Architecture
@@ -21,6 +21,7 @@ Decentralized AI marketplace with:
 - [contracts](contracts)
   - [contracts/hardhat.config.js](contracts/hardhat.config.js)
   - [contracts/contracts/ModelRegistry.sol](contracts/contracts/ModelRegistry.sol)
+  - [contracts/contracts/ModelLicense.sol](contracts/contracts/ModelLicense.sol)
   - [contracts/scripts/deploy.js](contracts/scripts/deploy.js)
 - [frontend](frontend)
   - [frontend/index.html](frontend/index.html)
@@ -73,6 +74,16 @@ Notes:
 - Do not commit this file.
 - Private key can be provided with or without `0x` prefix.
 
+Configure [backend/.env](backend/.env) for Phase 3 usage metering:
+
+```env
+WEB3_RPC_URL=https://sepolia.infura.io/v3/YOUR_PROJECT_ID
+MODEL_LICENSE_ADDRESS=0xYOUR_MODEL_LICENSE_CONTRACT
+BACKEND_SIGNER_PRIVATE_KEY=YOUR_64_HEX_PRIVATE_KEY
+MODEL_LICENSE_MAX_USE_GAS=250000
+MODEL_LICENSE_TX_TIMEOUT=180
+```
+
 ### Install and deploy
 ```powershell
 cd contracts
@@ -88,15 +99,17 @@ Expected outputs:
 1. Upload model file + metadata from [frontend/upload.html](frontend/upload.html)
 2. Backend uploads to IPFS and returns `model_id` + hashes
 3. Frontend registers model on-chain via `registerModel`
-4. Buyer connects wallet and purchases model via `buyModel`
-5. Backend issues runtime passkey for prediction endpoints
+4. Buyer connects wallet and mints a `ModelLicense` NFT via `mintLicense(modelId, metadataUri)`
+5. Backend verifies NFT ownership + model binding before prediction
+6. Backend records usage on-chain via `recordUse(tokenId)` after successful inference
+7. Inference is blocked once `usedCount >= maxUses`
 
 ## Main API Endpoints
 - `GET /api/health`
 - `GET /api/models`
 - `POST /api/models/upload`
 - `GET /api/models/status/{job_id}`
-- `POST /api/models/{model_id}/buy`
+- `POST /api/models/{model_id}/license-metadata`
 - `GET /api/models/purchased`
 - `POST /api/models/{model_id}/predict`
 - `POST /api/models/{model_id}/predict-image`

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Run predictions on purchased AI models using your runtime passkey on DAMM." />
+  <meta name="description" content="Run predictions on DAMM using NFT license token ownership and metered on-chain usage." />
   <title>Predict — DAMM</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -27,7 +27,7 @@
 
   <main class="container">
     <h1>Run Prediction</h1>
-    <p class="sub">Buy a model first to get your runtime passkey, then submit inputs to get predictions.</p>
+    <p class="sub">Buy a model to mint an NFT license, then run predictions with remaining on-chain uses.</p>
 
     <section class="predict-panel">
       <label>Select Model
@@ -37,10 +37,13 @@
       <button id="buySelectedBtn" type="button" class="secondary-btn" style="width:auto;align-self:flex-start;">Buy Selected Model</button>
     </section>
 
-    <form id="predictForm">
-      <label>Runtime Passkey*
-        <input id="passkeyInput" type="text" placeholder="Passkey generated when you bought this model" required />
+    <form id="predictForm" class="predict-form-card">
+      <label>License Token*
+        <select id="licenseTokenSelect" required>
+          <option value="">Connect wallet to load licenses</option>
+        </select>
       </label>
+      <div id="licenseInfo" class="muted"></div>
       <label id="jsonInputLabel">Input JSON Array*
         <textarea id="predictInput" placeholder="Example: [0.2, 0.7, 0.1]" required></textarea>
       </label>
@@ -50,7 +53,7 @@
       <button type="submit" id="predictSubmitBtn">Run Prediction</button>
     </form>
 
-    <section>
+    <section class="result-panel">
       <h2>Prediction Result</h2>
       <pre id="predictResult">No prediction yet.</pre>
       <div id="predictVisual"></div>
@@ -61,8 +64,8 @@
     <div class="site-footer-inner">
       <h3>About DAMM</h3>
       <p>
-        DAMM supports model usage security through per-buy runtime passkeys.
-        Your passkey is stored in your session and auto-filled after purchase.
+        DAMM uses NFT licenses as passkey replacements.
+        Each successful inference records on-chain usage and enforces max-use limits.
       </p>
     </div>
   </footer>

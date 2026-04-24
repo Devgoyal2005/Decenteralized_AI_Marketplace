@@ -30,6 +30,7 @@
     <p class="sub">Pin your model to IPFS and register it in the marketplace with full metadata.</p>
 
     <form id="uploadForm">
+
       <div class="grid">
         <label>Model Name* <input type="text" name="name" required placeholder="e.g. ResNet50 Image Classifier" /></label>
         <label>Creator Wallet <input type="text" name="creator" id="creatorField" placeholder="0x… (auto-filled if wallet connected)" /></label>
@@ -144,6 +145,16 @@
       <label>Model File* <input type="file" name="file" required /></label>
 
       <button type="submit" id="uploadSubmitBtn">Upload Model to IPFS</button>
+
+      <section class="upload-progress-panel">
+        <div class="progress-head">
+          <span id="uploadStage">Idle</span>
+          <span id="uploadPercent">0%</span>
+        </div>
+        <div class="progress-track" aria-label="Upload progress">
+          <div id="uploadProgressBar" class="progress-fill" style="width:0%"></div>
+        </div>
+      </section>
     </form>
 
     <section>

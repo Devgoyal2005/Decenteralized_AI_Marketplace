@@ -552,6 +552,52 @@ pre {
   background: var(--bg-3);
 }
 
+.predict-form-card,
+.result-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-3);
+  padding: 18px;
+}
+
+.result-panel h2 {
+  margin-bottom: 10px;
+}
+
+.upload-progress-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #22c55e);
+  width: 0;
+  transition: width 0.25s ease;
+}
+
 /* ─── Contribute ──────────────────────────────────────────────── */
 .contrib-layout {
   display: grid;

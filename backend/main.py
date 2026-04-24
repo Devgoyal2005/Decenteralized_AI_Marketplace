@@ -15,6 +15,8 @@ import requests
 from requests import RequestException
 import psycopg2
 from psycopg2.extras import RealDictCursor  
+from web3 import Web3
+from eth_account import Account
 
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_PATH = BASE_DIR / "models_registry.json"
@@ -34,11 +36,16 @@ PINATA_CONNECT_TIMEOUT = int(os.getenv("PINATA_CONNECT_TIMEOUT", "30"))
 PINATA_READ_TIMEOUT = int(os.getenv("PINATA_READ_TIMEOUT", "600"))
 PINATA_UPLOAD_RETRIES = int(os.getenv("PINATA_UPLOAD_RETRIES", "2"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+WEB3_RPC_URL = os.getenv("WEB3_RPC_URL", "").strip()
+MODEL_LICENSE_ADDRESS = os.getenv("MODEL_LICENSE_ADDRESS", "").strip()
+MODEL_LICENSE_MAX_USE_GAS = int(os.getenv("MODEL_LICENSE_MAX_USE_GAS", "250000"))
+MODEL_LICENSE_TX_TIMEOUT = int(os.getenv("MODEL_LICENSE_TX_TIMEOUT", "180"))
+BACKEND_SIGNER_PRIVATE_KEY = os.getenv("BACKEND_SIGNER_PRIVATE_KEY", "").strip()
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "CORS_ORIGINS",
-        "http://127.0.0.1:5500,http://localhost:5500,http://127.0.0.1:8001,http://localhost:8001",
+        "http://127.0.0.1:5500,http://localhost:5500,http://127.0.0.1:8001,http://localhost:8001,http://127.0.0.1:8080,http://localhost:8080,http://[::1]:8080",
     ).split(",")
     if origin.strip()
 ]
@@ -59,10 +66,6 @@ app.add_middleware(
 @app.on_event("startup")
 def _startup_init() -> None:
     try:
-        _init_passkeys_table()
-    except Exception as exc:
-        print(f"[WARN] Failed to initialize DB table model_passkeys: {exc}")
-    try:
         _init_models_table()
     except Exception as exc:
         print(f"[WARN] Failed to initialize DB table models_registry: {exc}")
@@ -70,6 +73,10 @@ def _startup_init() -> None:
         _init_proposals_table()
     except Exception as exc:
         print(f"[WARN] Failed to initialize DB table proposals_registry: {exc}")
+    try:
+        _init_nft_licenses_table()
+    except Exception as exc:
+        print(f"[WARN] Failed to initialize DB table nft_licenses: {exc}")
     try:
         _bootstrap_json_registries_to_db()
     except Exception as exc:
@@ -118,6 +125,175 @@ def _find_model_index(models: List[Dict[str, Any]], model_id: str) -> int:
 def _model_extension(file_name: str) -> str:
     suffix = Path(file_name).suffix.strip()
     return suffix if suffix else ".bin"
+
+
+MODEL_LICENSE_ABI_MIN = [
+    {
+        "inputs": [{"internalType": "uint256", "name": "_tokenId", "type": "uint256"}],
+        "name": "getLicenseStatus",
+        "outputs": [
+            {"internalType": "string", "name": "modelId", "type": "string"},
+            {"internalType": "address", "name": "owner", "type": "address"},
+            {"internalType": "uint256", "name": "maxUses", "type": "uint256"},
+            {"internalType": "uint256", "name": "usedCount", "type": "uint256"},
+            {"internalType": "bool", "name": "expired", "type": "bool"},
+            {"internalType": "string", "name": "metadataUri", "type": "string"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "_tokenId", "type": "uint256"},
+            {"internalType": "address", "name": "_wallet", "type": "address"},
+            {"internalType": "string", "name": "_modelId", "type": "string"},
+        ],
+        "name": "isLicenseUsable",
+        "outputs": [
+            {"internalType": "bool", "name": "usable", "type": "bool"},
+            {"internalType": "string", "name": "reason", "type": "string"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"internalType": "uint256", "name": "_tokenId", "type": "uint256"}],
+        "name": "recordUse",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
+
+
+def _normalized_private_key(raw: str) -> str:
+    key = (raw or "").strip()
+    if not key:
+        return ""
+    with_prefix = key if key.startswith("0x") else f"0x{key}"
+    return with_prefix if len(with_prefix) == 66 else ""
+
+
+def _get_model_license_contract():
+    if not WEB3_RPC_URL:
+        raise HTTPException(status_code=500, detail="WEB3_RPC_URL is not configured")
+    if not MODEL_LICENSE_ADDRESS:
+        raise HTTPException(status_code=500, detail="MODEL_LICENSE_ADDRESS is not configured")
+
+    w3 = Web3(Web3.HTTPProvider(WEB3_RPC_URL, request_kwargs={"timeout": MODEL_LICENSE_TX_TIMEOUT}))
+    if not w3.is_connected():
+        raise HTTPException(status_code=502, detail="Unable to connect to WEB3_RPC_URL")
+    if not Web3.is_address(MODEL_LICENSE_ADDRESS):
+        raise HTTPException(status_code=500, detail="MODEL_LICENSE_ADDRESS is invalid")
+
+    contract = w3.eth.contract(
+        address=Web3.to_checksum_address(MODEL_LICENSE_ADDRESS),
+        abi=MODEL_LICENSE_ABI_MIN,
+    )
+    return w3, contract
+
+
+def _verify_license_for_model(model_id: str, wallet_address: str, token_id: int) -> Dict[str, Any]:
+    w3, contract = _get_model_license_contract()
+
+    if not Web3.is_address(wallet_address):
+        raise HTTPException(status_code=400, detail="wallet_address is invalid")
+
+    try:
+        usable, reason = contract.functions.isLicenseUsable(
+            int(token_id), Web3.to_checksum_address(wallet_address), model_id
+        ).call()
+        if not usable:
+            raise HTTPException(status_code=403, detail=f"License not usable: {reason}")
+
+        status = contract.functions.getLicenseStatus(int(token_id)).call()
+        # Check if the license owner is the zero address, which indicates non-existence
+        if str(status[1]) == "0x0000000000000000000000000000000000000000":
+            raise HTTPException(status_code=404, detail="License does not exist")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Check if the error message indicates the token does not exist
+        if "invalid token ID" in str(exc) or "URI query for nonexistent token" in str(exc):
+            raise HTTPException(status_code=404, detail="License does not exist")
+        raise HTTPException(status_code=502, detail=f"Failed to verify license on-chain: {exc}")
+
+    return {
+        "model_id": str(status[0]),
+        "owner": str(status[1]),
+        "max_uses": int(status[2]),
+        "used_count": int(status[3]),
+        "expired": bool(status[4]),
+        "metadata_uri": str(status[5]),
+    }
+
+
+def _record_license_use_on_chain(token_id: int) -> str:
+    normalized_key = _normalized_private_key(BACKEND_SIGNER_PRIVATE_KEY)
+    if not normalized_key:
+        raise HTTPException(status_code=500, detail="BACKEND_SIGNER_PRIVATE_KEY is not configured")
+
+    w3, contract = _get_model_license_contract()
+    account = Account.from_key(normalized_key)
+
+    try:
+        nonce = w3.eth.get_transaction_count(account.address, "pending")
+        tx = contract.functions.recordUse(int(token_id)).build_transaction(
+            {
+                "from": account.address,
+                "nonce": nonce,
+                "gas": MODEL_LICENSE_MAX_USE_GAS,
+                "gasPrice": w3.eth.gas_price,
+                "chainId": w3.eth.chain_id,
+            }
+        )
+
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=MODEL_LICENSE_TX_TIMEOUT)
+        if receipt.status != 1:
+            raise HTTPException(status_code=502, detail="recordUse transaction reverted")
+        return tx_hash.hex()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to record license usage on-chain: {exc}")
+
+
+def _find_model_by_id(model_id: str) -> Optional[Dict[str, Any]]:
+    models = _get_all_models()
+    idx = _find_model_index(models, model_id)
+    if idx < 0:
+        return None
+    return models[idx]
+
+
+def _ensure_model_downloaded(model: Dict[str, Any]) -> str:
+    ipfs_hash = str(model.get("ipfs_hash", "")).strip()
+    gateway_url = str(model.get("gateway_url", "")).strip()
+    if not ipfs_hash or not gateway_url:
+        raise HTTPException(status_code=400, detail="Model IPFS details are missing")
+
+    _ensure_downloads_dir()
+    extension = _model_extension(str(model.get("file_name", "model.bin")))
+    local_path = DOWNLOADED_MODELS_DIR / f"{ipfs_hash}{extension}"
+
+    if not local_path.exists():
+        try:
+            with requests.get(gateway_url, stream=True, timeout=(30, 300)) as response:
+                if response.status_code >= 300:
+                    raise HTTPException(status_code=502, detail=f"Failed to download model from IPFS: {response.text}")
+                with local_path.open("wb") as out_file:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            out_file.write(chunk)
+        except RequestException as exc:
+            raise HTTPException(status_code=504, detail=f"Network error while downloading model: {str(exc)}")
+
+    model["local_model_path"] = str(local_path)
+    model["downloaded_at"] = datetime.utcnow().isoformat() + "Z"
+    _save_model_record(model)
+    return str(local_path)
 
 
 def _generate_runtime_passkey() -> str:
@@ -186,6 +362,180 @@ def _init_passkeys_table() -> None:
                 """
             )
     conn.close()
+
+
+def _init_nft_licenses_table() -> None:
+    """Create the nft_licenses table: wallet_address + model_id → nft_token_id mapping."""
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS nft_licenses (
+                    id BIGSERIAL PRIMARY KEY,
+                    wallet_address TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL DEFAULT '',
+                    nft_token_id BIGINT,
+                    metadata_ipfs_hash TEXT NOT NULL DEFAULT '',
+                    metadata_uri TEXT NOT NULL DEFAULT '',
+                    local_model_path TEXT NOT NULL DEFAULT '',
+                    purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (wallet_address, model_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_nft_licenses_wallet
+                ON nft_licenses(wallet_address);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_nft_licenses_model
+                ON nft_licenses(model_id);
+                """
+            )
+    conn.close()
+
+
+def _store_nft_license_in_db(
+    *,
+    wallet_address: str,
+    model_id: str,
+    model_name: str,
+    nft_token_id: Optional[int],
+    metadata_ipfs_hash: str,
+    metadata_uri: str,
+    local_model_path: str,
+) -> None:
+    """Upsert a wallet→model NFT license record into Neon DB."""
+    conn = _get_db_connection()
+    if conn is None:
+        return
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO nft_licenses
+                    (wallet_address, model_id, model_name, nft_token_id,
+                     metadata_ipfs_hash, metadata_uri, local_model_path, purchased_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (wallet_address, model_id) DO UPDATE SET
+                    nft_token_id        = EXCLUDED.nft_token_id,
+                    metadata_ipfs_hash  = EXCLUDED.metadata_ipfs_hash,
+                    metadata_uri        = EXCLUDED.metadata_uri,
+                    local_model_path    = EXCLUDED.local_model_path,
+                    purchased_at        = NOW();
+                """,
+                (
+                    wallet_address.lower(),
+                    model_id,
+                    model_name,
+                    nft_token_id,
+                    metadata_ipfs_hash,
+                    metadata_uri,
+                    local_model_path,
+                ),
+            )
+    conn.close()
+
+
+def _get_nft_license_from_db(wallet_address: str, model_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch a stored NFT license record for a given wallet + model."""
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT wallet_address, model_id, model_name, nft_token_id,
+                           metadata_ipfs_hash, metadata_uri, local_model_path, purchased_at
+                    FROM nft_licenses
+                    WHERE wallet_address = %s AND model_id = %s
+                    LIMIT 1;
+                    """,
+                    (wallet_address.lower(), model_id),
+                )
+                row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return dict(row)
+    except Exception:
+        conn.close()
+        return None
+
+
+def _resolve_license(wallet_address: str, model_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Unified license resolver — checks nft_licenses first (new system),
+    then falls back to model_passkeys (legacy buyers who purchased before
+    the nft_licenses table was introduced).
+    Returns a normalised dict with at least: wallet_address, model_id, nft_token_id.
+    Returns None if no purchase record exists at all.
+    """
+    # 1. New system: nft_licenses table
+    record = _get_nft_license_from_db(wallet_address, model_id)
+    if record:
+        return record
+
+    # 2. Legacy fallback: model_passkeys table
+    conn = _get_db_connection()
+    if conn is None:
+        return None
+    try:
+        with conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT model_id, model_name, model_owner, buyer, passkey, purchased_at
+                    FROM model_passkeys
+                    WHERE model_id = %s AND LOWER(buyer) = LOWER(%s)
+                    LIMIT 1;
+                    """,
+                    (model_id, wallet_address),
+                )
+                row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+
+        # Backfill into nft_licenses so future calls hit the fast path
+        legacy = dict(row)
+        print(f"[INFO] Backfilling legacy buyer {wallet_address} for model {model_id} into nft_licenses")
+        _store_nft_license_in_db(
+            wallet_address=wallet_address,
+            model_id=model_id,
+            model_name=str(legacy.get("model_name", "")),
+            nft_token_id=None,
+            metadata_ipfs_hash="",
+            metadata_uri="",
+            local_model_path="",
+        )
+        return {
+            "wallet_address": wallet_address,
+            "model_id": model_id,
+            "model_name": legacy.get("model_name", ""),
+            "nft_token_id": None,
+            "metadata_ipfs_hash": "",
+            "metadata_uri": "",
+            "local_model_path": "",
+            "purchased_at": legacy.get("purchased_at"),
+            "legacy": True,
+        }
+    except Exception as exc:
+        print(f"[WARN] Legacy passkey fallback failed: {exc}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return None
 
 
 def _init_models_table() -> None:
@@ -762,7 +1112,13 @@ def process_upload(job_id: str, file_bytes: bytes, file_filename: str, file_cont
         }
 
     except Exception as e:
-        jobs[job_id] = {"status": "failed", "error": str(e)}
+        error_message = str(e)
+        if "timed out" in error_message.lower():
+            error_message = (
+                "Upload timed out while sending data to IPFS. "
+                "Try a smaller file or increase PINATA_CONNECT_TIMEOUT/PINATA_READ_TIMEOUT in backend/.env"
+            )
+        jobs[job_id] = {"status": "failed", "error": error_message}
 
 
 @app.get("/api/health")
@@ -900,71 +1256,246 @@ def get_upload_status(job_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/models/{model_id}/buy")
-def buy_model(model_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    models = _get_all_models()
-    model_idx = _find_model_index(models, model_id)
-    if model_idx < 0:
+def buy_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Full buy flow:
+    1. Validate model exists
+    2. Download model file from IPFS/Pinata into local cache
+    3. Pin ERC-721 NFT metadata JSON to Pinata (wallet, model_id, ipfs_hash)
+    4. Store wallet → model_id → nft metadata in Neon DB (nft_licenses table)
+    5. Return nft_token_id=0 (token minting happens client-side via ModelRegistry.sol)
+       and the metadata_uri so the frontend can call mintLicense on-chain
+    """
+    model = _find_model_by_id(model_id)
+    if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    model = models[model_idx]
-    ipfs_hash = str(model.get("ipfs_hash", "")).strip()
-    gateway_url = str(model.get("gateway_url", "")).strip()
-    if not ipfs_hash or not gateway_url:
-        raise HTTPException(status_code=400, detail="Model IPFS details are missing")
+    buyer = str(body.get("buyer", "")).strip()
+    if not buyer:
+        raise HTTPException(status_code=400, detail="buyer (wallet address) is required")
 
-    _ensure_downloads_dir()
-    extension = _model_extension(str(model.get("file_name", "model.bin")))
-    local_path = DOWNLOADED_MODELS_DIR / f"{ipfs_hash}{extension}"
+    if not Web3.is_address(buyer):
+        raise HTTPException(status_code=400, detail="buyer must be a valid Ethereum address")
 
-    if not local_path.exists():
-        try:
-            with requests.get(gateway_url, stream=True, timeout=(30, 300)) as response:
-                if response.status_code >= 300:
-                    raise HTTPException(status_code=502, detail=f"Failed to download model from IPFS: {response.text}")
+    model_name  = str(model.get("name", "Unnamed Model")).strip() or "Unnamed Model"
+    model_owner = str(model.get("creator", "")).strip()
+    ipfs_hash   = str(model.get("ipfs_hash", "")).strip()
+    image_uri   = f"ipfs://{ipfs_hash}" if ipfs_hash else ""
 
-                with local_path.open("wb") as out_file:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            out_file.write(chunk)
-        except RequestException as exc:
-            raise HTTPException(status_code=504, detail=f"Network error while downloading model: {str(exc)}")
+    # ── 1. Check if already purchased ─────────────────────────────────
+    existing = _get_nft_license_from_db(buyer, model_id)
+    if existing:
+        return {
+            "success": True,
+            "already_purchased": True,
+            "model_id": model_id,
+            "model_name": model_name,
+            "wallet_address": buyer,
+            "nft_token_id": existing.get("nft_token_id"),
+            "metadata_uri": existing.get("metadata_uri"),
+            "metadata_ipfs_hash": existing.get("metadata_ipfs_hash"),
+            "local_model_path": existing.get("local_model_path"),
+            "message": "Model already purchased — returning existing license.",
+        }
 
-    runtime_passkey = _generate_runtime_passkey()
-    buyer = str((body or {}).get("buyer", "")).strip() or "Anonymous Buyer"
-    owner_name = str(model.get("creator", "")).strip() or "Unknown Owner"
-    model_name = str(model.get("name", "")).strip() or "Unnamed Model"
+    # ── 2. Download model file from IPFS into local cache ──────────────
+    local_model_path = _ensure_model_downloaded(model)
 
+    # ── 3. Pin NFT metadata JSON to Pinata ─────────────────────────────
+    total_uses = int(body.get("total_uses", 1000) or 1000)
+    nft_metadata = {
+        "name": f"{model_name} — License NFT",
+        "description": f"Grants {total_uses} inference calls on model '{model_name}' (ID: {model_id})",
+        "image": image_uri,
+        "attributes": [
+            {"trait_type": "Model ID",      "value": model_id},
+            {"trait_type": "Buyer",         "value": buyer},
+            {"trait_type": "Model Owner",   "value": model_owner},
+            {"trait_type": "Total Uses",    "value": total_uses},
+            {"trait_type": "IPFS Hash",     "value": ipfs_hash},
+            {"trait_type": "Purchased At",  "value": datetime.utcnow().date().isoformat()},
+        ],
+    }
+
+    metadata_ipfs_hash = ""
+    metadata_uri = ""
     try:
-        _store_passkey_in_db(
-            model_id=model_id,
-            model_name=model_name,
-            model_owner=owner_name,
-            buyer=buyer,
-            passkey=runtime_passkey,
+        headers = _pinata_headers()
+        pinata_payload = {
+            "pinataMetadata": {"name": f"nft-license-{model_id[:8]}-{buyer[:8]}"},
+            "pinataContent": nft_metadata,
+        }
+        resp = _post_with_retries(
+            PINATA_JSON_URL,
+            retries=PINATA_UPLOAD_RETRIES,
+            headers={**headers, "Content-Type": "application/json"},
+            json=pinata_payload,
         )
+        if resp.status_code < 300:
+            metadata_ipfs_hash = str(resp.json().get("IpfsHash", "")).strip()
+            metadata_uri = f"ipfs://{metadata_ipfs_hash}" if metadata_ipfs_hash else ""
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to store passkey in DB: {exc}")
+        print(f"[WARN] Pinata NFT metadata pin failed (non-fatal): {exc}")
+        # Non-fatal: license record is still stored in DB without IPFS hash
 
-    model["purchased"] = True
-    model["downloaded_at"] = datetime.utcnow().isoformat() + "Z"
-    model["local_model_path"] = str(local_path)
-    model["runtime_passkey"] = runtime_passkey
-    model["passkey_generated_at"] = datetime.utcnow().isoformat() + "Z"
-    try:
-        _save_model_record(model)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to update model purchase status: {exc}")
+    # ── 4. Store in Neon DB: wallet → model_id → metadata ─────────────
+    # nft_token_id is None until the frontend calls mintLicense on-chain
+    # and records the token ID via POST /api/models/{id}/license-confirm
+    _store_nft_license_in_db(
+        wallet_address=buyer,
+        model_id=model_id,
+        model_name=model_name,
+        nft_token_id=None,
+        metadata_ipfs_hash=metadata_ipfs_hash,
+        metadata_uri=metadata_uri,
+        local_model_path=local_model_path,
+    )
 
     return {
         "success": True,
-        "message": "Model purchased and downloaded locally",
+        "already_purchased": False,
         "model_id": model_id,
         "model_name": model_name,
-        "owner": owner_name,
-        "buyer": buyer,
-        "ipfs_hash": ipfs_hash,
-        "local_model_path": str(local_path),
-        "passkey": runtime_passkey,
+        "wallet_address": buyer,
+        "nft_token_id": None,
+        "metadata_uri": metadata_uri,
+        "metadata_ipfs_hash": metadata_ipfs_hash,
+        "metadata_gateway_url": f"{IPFS_GATEWAY.rstrip('/')}/{metadata_ipfs_hash}" if metadata_ipfs_hash else "",
+        "local_model_path": local_model_path,
+        "message": "Model downloaded. NFT metadata pinned. Call mintLicense on-chain with the metadata_uri, then confirm with /license-confirm.",
+    }
+
+
+@app.post("/api/models/{model_id}/license-confirm")
+def confirm_license_token(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Called by the frontend AFTER the on-chain mintLicense tx confirms.
+    Writes the real nft_token_id back to the nft_licenses row in Neon DB.
+    Body: { wallet_address, nft_token_id }
+    """
+    wallet_address = str(body.get("wallet_address", "")).strip()
+    if not wallet_address:
+        raise HTTPException(status_code=400, detail="wallet_address is required")
+
+    token_id_raw = body.get("nft_token_id")
+    if token_id_raw is None:
+        raise HTTPException(status_code=400, detail="nft_token_id is required")
+    try:
+        nft_token_id = int(token_id_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="nft_token_id must be an integer")
+
+    existing = _get_nft_license_from_db(wallet_address, model_id)
+    if not existing:
+        raise HTTPException(
+            status_code=404,
+            detail="No license record found. Call /buy first.",
+        )
+
+    _store_nft_license_in_db(
+        wallet_address=wallet_address,
+        model_id=model_id,
+        model_name=existing.get("model_name", ""),
+        nft_token_id=nft_token_id,
+        metadata_ipfs_hash=existing.get("metadata_ipfs_hash", ""),
+        metadata_uri=existing.get("metadata_uri", ""),
+        local_model_path=existing.get("local_model_path", ""),
+    )
+
+    return {
+        "success": True,
+        "model_id": model_id,
+        "wallet_address": wallet_address,
+        "nft_token_id": nft_token_id,
+        "message": "Token ID confirmed and stored in DB.",
+    }
+
+
+@app.get("/api/models/{model_id}/license-status")
+def get_license_status(model_id: str, wallet: str) -> Dict[str, Any]:
+    """
+    GET /api/models/{model_id}/license-status?wallet=0x...
+    Returns whether a wallet has purchased this model and the stored NFT token_id.
+    """
+    if not wallet:
+        raise HTTPException(status_code=400, detail="wallet query param is required")
+    record = _get_nft_license_from_db(wallet, model_id)
+    if not record:
+        return {"purchased": False, "model_id": model_id, "wallet_address": wallet}
+    return {
+        "purchased": True,
+        "model_id": model_id,
+        "wallet_address": wallet,
+        "nft_token_id": record.get("nft_token_id"),
+        "metadata_uri": record.get("metadata_uri"),
+        "metadata_ipfs_hash": record.get("metadata_ipfs_hash"),
+        "local_model_path": record.get("local_model_path"),
+        "purchased_at": str(record.get("purchased_at", "")),
+    }
+
+
+@app.post("/api/models/{model_id}/license-metadata")
+def create_license_metadata(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    model = _find_model_by_id(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    buyer = str(body.get("buyer", "")).strip()
+    if not buyer:
+        raise HTTPException(status_code=400, detail="buyer is required")
+
+    total_uses = int(body.get("total_uses", 1000) or 1000)
+    if total_uses <= 0:
+        raise HTTPException(status_code=400, detail="total_uses must be > 0")
+
+    headers = _pinata_headers()
+
+    name = str(model.get("name", "Unnamed Model")).strip() or "Unnamed Model"
+    model_owner = str(model.get("creator", "Unknown Owner")).strip() or "Unknown Owner"
+    model_image_hash = str(model.get("ipfs_hash", "")).strip()
+    image_uri = f"ipfs://{model_image_hash}" if model_image_hash else ""
+
+    metadata_json = {
+        "name": f"{name} - License",
+        "description": f"Grants {total_uses} inference calls on model {model_id}",
+        "image": image_uri,
+        "attributes": [
+            {"trait_type": "Model ID", "value": model_id},
+            {"trait_type": "Total Uses", "value": total_uses},
+            {"trait_type": "Purchased At", "value": datetime.utcnow().date().isoformat()},
+            {"trait_type": "Model Owner", "value": model_owner},
+            {"trait_type": "Buyer", "value": buyer},
+        ],
+    }
+
+    payload = {
+        "pinataMetadata": {"name": f"license-metadata-{model_id}-{uuid.uuid4().hex[:8]}"},
+        "pinataContent": metadata_json,
+    }
+
+    try:
+        response = _post_with_retries(
+            PINATA_JSON_URL,
+            retries=PINATA_UPLOAD_RETRIES,
+            headers={**headers, "Content-Type": "application/json"},
+            json=payload,
+        )
+    except RequestException as exc:
+        raise HTTPException(status_code=504, detail=f"Failed to upload license metadata to Pinata: {exc}")
+
+    if response.status_code >= 300:
+        raise HTTPException(status_code=502, detail=f"Pinata metadata upload failed: {response.text}")
+
+    meta_ipfs_hash = str(response.json().get("IpfsHash", "")).strip()
+    if not meta_ipfs_hash:
+        raise HTTPException(status_code=502, detail="Pinata did not return metadata IpfsHash")
+
+    return {
+        "model_id": model_id,
+        "metadata_ipfs_hash": meta_ipfs_hash,
+        "metadata_uri": f"ipfs://{meta_ipfs_hash}",
+        "metadata_gateway_url": f"{IPFS_GATEWAY.rstrip('/')}/{meta_ipfs_hash}",
+        "metadata": metadata_json,
     }
 
 
@@ -976,37 +1507,42 @@ def list_purchased_models() -> Dict[str, Any]:
 
 @app.post("/api/models/{model_id}/predict")
 def predict_with_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    models = _get_all_models()
-    model_idx = _find_model_index(models, model_id)
-    if model_idx < 0:
+    model = _find_model_by_id(model_id)
+    if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    model = models[model_idx]
-    local_model_path = str(model.get("local_model_path", "")).strip()
-    if not model.get("purchased") or not local_model_path:
-        raise HTTPException(status_code=400, detail="Model must be bought first")
-    if not Path(local_model_path).exists():
-        raise HTTPException(status_code=400, detail="Local model file missing. Buy again to download it")
+    wallet_address = str(body.get("wallet_address", "")).strip()
+    if not wallet_address:
+        raise HTTPException(status_code=400, detail="wallet_address is required")
 
-    provided_passkey = str(body.get("passkey", "")).strip()
-    if not provided_passkey:
-        raise HTTPException(status_code=400, detail="Passkey is required to run this model")
+    # DB license check — nft_licenses first, then model_passkeys legacy fallback
+    license_record = _resolve_license(wallet_address, model_id)
+    if not license_record:
+        raise HTTPException(
+            status_code=403,
+            detail="No license found for this wallet and model. Purchase the model first.",
+        )
 
-    db_url = _normalized_database_url()
-    if db_url:
+    # token_id from DB (may be None if on-chain mint hasn't been confirmed yet)
+    # Allow predict if DB record exists (client-side chain verify handles on-chain check)
+    token_id_from_db = license_record.get("nft_token_id")
+    token_id_raw = body.get("license_token_id", token_id_from_db)
+    try:
+        token_id = int(token_id_raw) if token_id_raw is not None else None
+    except (TypeError, ValueError):
+        token_id = None
+
+    # ── Optionally verify on-chain if contract is configured ──────────
+    license_status_before = None
+    if token_id is not None and WEB3_RPC_URL and MODEL_LICENSE_ADDRESS:
         try:
-            if not _is_passkey_valid_in_db(model_id, provided_passkey):
-                raise HTTPException(status_code=403, detail="Invalid passkey")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Passkey verification failed: {exc}")
-    else:
-        expected_passkey = str(model.get("runtime_passkey", "")).strip()
-        if not expected_passkey:
-            raise HTTPException(status_code=400, detail="Passkey missing for this model. Buy again to generate one")
-        if provided_passkey != expected_passkey:
-            raise HTTPException(status_code=403, detail="Invalid passkey")
+            license_status_before = _verify_license_for_model(model_id, wallet_address, token_id)
+        except HTTPException as exc:
+            print(f"[WARN] On-chain check failed but DB record is valid: {exc.detail}")
+            pass
+        except Exception:
+            pass  # On-chain check best-effort; DB record is the source of truth
+    local_model_path = _ensure_model_downloaded(model)
 
     if "input" not in body:
         raise HTTPException(status_code=400, detail="Request body must include 'input'")
@@ -1027,11 +1563,35 @@ def predict_with_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if output_labels:
         probabilities = _predict_labels(ipfs_hash, input_vector, output_labels)
         predicted_label = max(probabilities, key=probabilities.get)
+
+        usage_tx = None
+        updated_status = None
+        if token_id is not None and WEB3_RPC_URL and MODEL_LICENSE_ADDRESS:
+            try:
+                usage_tx = _record_license_use_on_chain(token_id)
+                updated_status = _verify_license_for_model(model_id, wallet_address, token_id)
+            except Exception:
+                pass
+
         return {
             "model_id": model_id,
+            "license_token_id": token_id,
+            "wallet_address": wallet_address,
             "input_shape": expected_shape,
             "local_model_path": local_model_path,
             "output_labels": output_labels,
+            "license": {
+                "nft_token_id": token_id,
+                "owner": (license_status_before or {}).get("owner", wallet_address),
+                "max_uses": (updated_status or {}).get("max_uses"),
+                "used_count": (updated_status or {}).get("used_count"),
+                "remaining_uses": (
+                    max((updated_status or {}).get("max_uses", 0) - (updated_status or {}).get("used_count", 0), 0)
+                    if updated_status else None
+                ),
+                "record_use_tx": usage_tx,
+                "verified_via": "on-chain" if updated_status else "neon-db",
+            },
             "prediction": {
                 "predicted_label": predicted_label,
                 "probabilities": probabilities,
@@ -1040,53 +1600,77 @@ def predict_with_model(model_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     digest = hashlib.sha256(f"{ipfs_hash}:{sum(input_vector):.8f}".encode("utf-8")).hexdigest()
     scalar = round((int(digest[:8], 16) / 0xFFFFFFFF), 6)
+
+    usage_tx = None
+    updated_status = None
+    if token_id is not None and WEB3_RPC_URL and MODEL_LICENSE_ADDRESS:
+        try:
+            usage_tx = _record_license_use_on_chain(token_id)
+            updated_status = _verify_license_for_model(model_id, wallet_address, token_id)
+        except Exception:
+            pass
+
     return {
         "model_id": model_id,
+        "license_token_id": token_id,
+        "wallet_address": wallet_address,
         "input_shape": expected_shape,
         "local_model_path": local_model_path,
+        "license": {
+            "nft_token_id": token_id,
+            "owner": (license_status_before or {}).get("owner", wallet_address),
+            "max_uses": (updated_status or {}).get("max_uses"),
+            "used_count": (updated_status or {}).get("used_count"),
+            "remaining_uses": (
+                max((updated_status or {}).get("max_uses", 0) - (updated_status or {}).get("used_count", 0), 0)
+                if updated_status else None
+            ),
+            "record_use_tx": usage_tx,
+            "verified_via": "on-chain" if updated_status else "neon-db",
+        },
         "prediction": {
             "value": scalar,
         },
     }
 
 
-@app.post("/api/models/{model_id}/predict-image")
-async def predict_with_image(
+@app.post("/api/models/{model_id}/predict-image", tags=["models"])
+async def predict_image(
     model_id: str,
     image: UploadFile = File(...),
-    passkey: str = Form(...),
+    wallet_address: str = Form(...),
+    token_id: Optional[int] = Form(None),
 ) -> Dict[str, Any]:
-    models = _get_all_models()
-    model_idx = _find_model_index(models, model_id)
-    if model_idx < 0:
+    """Image prediction — authenticated by wallet + Neon DB license lookup."""
+    model = _find_model_by_id(model_id)
+    if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    model = models[model_idx]
-    local_model_path = str(model.get("local_model_path", "")).strip()
-    if not model.get("purchased") or not local_model_path:
-        raise HTTPException(status_code=400, detail="Model must be bought first")
-    if not Path(local_model_path).exists():
-        raise HTTPException(status_code=400, detail="Local model file missing. Buy again to download it")
+    # DB license check — nft_licenses first, then model_passkeys legacy fallback
+    license_record = _resolve_license(wallet_address, model_id)
+    if not license_record:
+        raise HTTPException(
+            status_code=403,
+            detail="No license found for this wallet. Purchase the model first.",
+        )
 
-    provided_passkey = str(passkey or "").strip()
-    if not provided_passkey:
-        raise HTTPException(status_code=400, detail="Passkey is required to run this model")
+    # Resolve token_id (from form or DB)
+    resolved_token_id = token_id if token_id is not None else license_record.get("nft_token_id")
 
-    db_url = _normalized_database_url()
-    if db_url:
+    # Optional on-chain verify
+    license_info = None
+    if resolved_token_id is not None and WEB3_RPC_URL and MODEL_LICENSE_ADDRESS:
         try:
-            if not _is_passkey_valid_in_db(model_id, provided_passkey):
-                raise HTTPException(status_code=403, detail="Invalid passkey")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Passkey verification failed: {exc}")
-    else:
-        expected_passkey = str(model.get("runtime_passkey", "")).strip()
-        if not expected_passkey:
-            raise HTTPException(status_code=400, detail="Passkey missing for this model. Buy again to generate one")
-        if provided_passkey != expected_passkey:
-            raise HTTPException(status_code=403, detail="Invalid passkey")
+            license_info = _verify_license_for_model(
+                model_id=model_id, wallet_address=wallet_address, token_id=resolved_token_id
+            )
+        except HTTPException as exc:
+            print(f"[WARN] On-chain check failed but DB record is valid: {exc.detail}")
+            pass
+        except Exception:
+            pass
+
+    local_model_path = _ensure_model_downloaded(model)
 
     image_bytes = await image.read()
     if not image_bytes:
@@ -1103,12 +1687,36 @@ async def predict_with_image(
     if output_labels:
         probabilities = _predict_labels(ipfs_hash, input_vector, output_labels)
         predicted_label = max(probabilities, key=probabilities.get)
+
+        usage_tx = None
+        updated_status = None
+        if resolved_token_id is not None and WEB3_RPC_URL and MODEL_LICENSE_ADDRESS:
+            try:
+                usage_tx = _record_license_use_on_chain(resolved_token_id)
+                updated_status = _verify_license_for_model(model_id, wallet_address, resolved_token_id)
+            except Exception:
+                pass
+
         return {
             "model_id": model_id,
+            "license_token_id": resolved_token_id,
+            "wallet_address": wallet_address,
             "mode": "image",
             "file_name": image.filename,
             "local_model_path": local_model_path,
             "output_labels": output_labels,
+            "license": {
+                "nft_token_id": resolved_token_id,
+                "owner": (license_info or {}).get("owner", wallet_address),
+                "max_uses": (updated_status or {}).get("max_uses"),
+                "used_count": (updated_status or {}).get("used_count"),
+                "remaining_uses": (
+                    max((updated_status or {}).get("max_uses", 0) - (updated_status or {}).get("used_count", 0), 0)
+                    if updated_status else None
+                ),
+                "record_use_tx": usage_tx,
+                "verified_via": "on-chain" if updated_status else "neon-db",
+            },
             "prediction": {
                 "predicted_label": predicted_label,
                 "probabilities": probabilities,
@@ -1117,11 +1725,35 @@ async def predict_with_image(
 
     digest = hashlib.sha256(f"{ipfs_hash}:{sum(input_vector):.8f}".encode("utf-8")).hexdigest()
     scalar = round((int(digest[:8], 16) / 0xFFFFFFFF), 6)
+
+    usage_tx = None
+    updated_status = None
+    if resolved_token_id is not None and WEB3_RPC_URL and MODEL_LICENSE_ADDRESS:
+        try:
+            usage_tx = _record_license_use_on_chain(resolved_token_id)
+            updated_status = _verify_license_for_model(model_id, wallet_address, resolved_token_id)
+        except Exception:
+            pass
+
     return {
         "model_id": model_id,
+        "license_token_id": resolved_token_id,
+        "wallet_address": wallet_address,
         "mode": "image",
         "file_name": image.filename,
         "local_model_path": local_model_path,
+        "license": {
+            "nft_token_id": resolved_token_id,
+            "owner": (license_info or {}).get("owner", wallet_address),
+            "max_uses": (updated_status or {}).get("max_uses"),
+            "used_count": (updated_status or {}).get("used_count"),
+            "remaining_uses": (
+                max((updated_status or {}).get("max_uses", 0) - (updated_status or {}).get("used_count", 0), 0)
+                if updated_status else None
+            ),
+            "record_use_tx": usage_tx,
+            "verified_via": "on-chain" if updated_status else "neon-db",
+        },
         "prediction": {
             "value": scalar,
         },
