@@ -8,7 +8,9 @@
  *   4. Backend verifies license in Neon DB (+ optional on-chain check) → runs prediction
  */
 
-const API_BASE = "http://127.0.0.1:8001";
+const API_BASE = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || window.location.hostname === "[::1]")
+  ? "http://127.0.0.1:8001"
+  : "https://your-production-url.com";
 
 const modelSelect       = document.getElementById("modelSelect");
 const buySelectedBtn    = document.getElementById("buySelectedBtn");

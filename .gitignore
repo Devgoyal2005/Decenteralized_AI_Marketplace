@@ -8,14 +8,20 @@ __pycache__/
 # Virtual environment
 .venv/
 venv/
+env/
 
 # Secrets
 backend/.env
+contracts/.env
+contracts/.env.*
 .env
+.env.local
 
 # Runtime/data artifacts
 backend/downloaded_models/
 backend/*.log
+backend/models_registry.json
+backend/proposals_registry.json
 
 # Node / Hardhat
 contracts/node_modules/
@@ -25,8 +31,9 @@ contracts/deployment.json
 contracts/typechain-types/
 contracts/coverage/
 contracts/coverage.json
-contracts/.env
-contracts/.env.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Editors/OS
 .vscode/

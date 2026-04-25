@@ -8,10 +8,46 @@
  * Uses contract.js + ethers.js for on-chain interaction
  */
 
-const API_BASE      = "http://127.0.0.1:8001";
+const API_BASE = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || window.location.hostname === "[::1]")
+  ? "http://127.0.0.1:8001"
+  : "https://your-production-url.com";
 const modelsList    = document.getElementById("modelsList");
 const refreshBtn    = document.getElementById("refreshBtn");
 
+// ─── JSON Viewer Modal Initializer ─────────────────────────────
+let jsonModal, jsonModalContent, jsonModalClose;
+function initJsonModal() {
+  if (document.getElementById("jsonViewerModal")) return;
+
+  const modalHtml = `
+    <div id="jsonViewerModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; overflow:auto; background-color:rgba(0,0,0,0.6); backdrop-filter:blur(4px);">
+      <div style="background-color:var(--elevated); margin: 5% auto; padding: 20px; border:1px solid var(--border); border-radius: 8px; width: 80%; max-width: 800px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="margin:0;">Sample JSON object</h3>
+          <span id="jsonViewerClose" style="color:var(--muted); font-size:24px; font-weight:bold; cursor:pointer; line-height:1;">&times;</span>
+        </div>
+        <pre id="jsonViewerContent" style="background:#1e1e1e; color:#d4d4d4; padding:16px; border-radius:4px; max-height:60vh; overflow:auto; font-size:0.9rem; font-family:monospace;"></pre>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML("beforeend", modalHtml);
+  
+  jsonModal = document.getElementById("jsonViewerModal");
+  jsonModalContent = document.getElementById("jsonViewerContent");
+  jsonModalClose = document.getElementById("jsonViewerClose");
+
+  jsonModalClose.onclick = () => jsonModal.style.display = "none";
+  window.addEventListener("click", (e) => {
+    if (e.target === jsonModal) jsonModal.style.display = "none";
+  });
+}
+window.addEventListener("DOMContentLoaded", initJsonModal);
+
+function showSampleJson(jsonObj) {
+  if (!jsonModal) initJsonModal();
+  jsonModalContent.textContent = JSON.stringify(jsonObj, null, 2);
+  jsonModal.style.display = "block";
+}
 // ─── API helper ───────────────────────────────────────────────
 async function apiFetch(path, options) {
   const res = await fetch(`${API_BASE}${path}`, options);
@@ -78,28 +114,45 @@ function buildModelCard(m) {
   article.className = "model-card";
   article.dataset.modelId = m.id || "";
 
-  // Title row
-  const titleRow = document.createElement("div");
-  titleRow.className = "model-title-row";
+  // 1. Header Frame (Title group on left, Thumbnail on right)
+  const header = document.createElement("div");
+  header.className = "model-card-header";
+  article.appendChild(header);
+
+  const titleGroup = document.createElement("div");
+  titleGroup.className = "model-title-group";
+  header.appendChild(titleGroup);
+
   const strong = document.createElement("strong");
   strong.textContent = m.name || "Unnamed Model";
-  titleRow.appendChild(strong);
+  titleGroup.appendChild(strong);
 
   const pills = document.createElement("div");
-  pills.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
+  pills.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;";
   pills.appendChild(span(m.category || "General", "pill"));
   if (m.purchased) pills.appendChild(span("Owned", "pill pill-green"));
-  titleRow.appendChild(pills);
-  article.appendChild(titleRow);
+  titleGroup.appendChild(pills);
+
+  const banner = document.createElement("img");
+  banner.className = "model-card-banner";
+  banner.src = m.thumbnail_gateway_url ? m.thumbnail_gateway_url : "assets/default_banner.png";
+  banner.alt = `${m.name || "Model"} Thumbnail`;
+  banner.onerror = () => { banner.src = "assets/default_banner.png"; };
+  header.appendChild(banner);
+
+  // 2. Body Container (Everything else)
+  const contentWrap = document.createElement("div");
+  contentWrap.className = "model-card-content";
+  article.appendChild(contentWrap);
 
   // Description
   const desc = document.createElement("p");
   desc.className = "model-desc";
   desc.textContent = m.description || "No description provided.";
-  article.appendChild(desc);
+  contentWrap.appendChild(desc);
 
   // Price
-  article.appendChild(buildPriceRow(m));
+  contentWrap.appendChild(buildPriceRow(m));
 
   // Meta grid
   const grid = document.createElement("div");
@@ -122,25 +175,46 @@ function buildModelCard(m) {
     small.appendChild(document.createTextNode(val));
     grid.appendChild(small);
   });
-  article.appendChild(grid);
+  contentWrap.appendChild(grid);
 
   const badges = buildMetricBadges(m.evaluation_metrics);
-  if (badges) article.appendChild(badges);
+  if (badges) contentWrap.appendChild(badges);
 
   const ipfsLine = document.createElement("small");
   ipfsLine.className = "muted";
   ipfsLine.textContent = `IPFS: ${m.ipfs_hash || "—"}`;
-  article.appendChild(ipfsLine);
+  contentWrap.appendChild(ipfsLine);
 
   if (m.gateway_url) {
-    article.appendChild(document.createElement("br"));
+    contentWrap.appendChild(document.createElement("br"));
+    const linksDiv = document.createElement("div");
+    linksDiv.style.display = "flex";
+    linksDiv.style.gap = "16px";
+    linksDiv.style.alignItems = "center";
+    
     const link = document.createElement("a");
     link.className = "primary-link";
     link.href = m.gateway_url;
     link.target = "_blank";
     link.rel = "noreferrer";
     link.textContent = "↗ View file on IPFS";
-    article.appendChild(link);
+    linksDiv.appendChild(link);
+
+    if (m.sample_json) {
+      const jsonBtn = document.createElement("button");
+      jsonBtn.className = "primary-link";
+      jsonBtn.style.background = "none";
+      jsonBtn.style.border = "none";
+      jsonBtn.style.cursor = "pointer";
+      jsonBtn.style.padding = "0";
+      jsonBtn.style.fontFamily = "inherit";
+      jsonBtn.style.fontSize = "inherit";
+      jsonBtn.textContent = "{ } View Sample JSON";
+      jsonBtn.addEventListener("click", () => showSampleJson(m.sample_json));
+      linksDiv.appendChild(jsonBtn);
+    }
+    
+    contentWrap.appendChild(linksDiv);
   }
 
   // Actions
@@ -157,14 +231,14 @@ function buildModelCard(m) {
   buyBtn.textContent = m.purchased ? "▶ Use Model" : "Buy Model";
   actions.appendChild(buyBtn);
 
-  article.appendChild(actions);
+  contentWrap.appendChild(actions);
 
   // NFT status line (filled asynchronously)
   const nftLine = document.createElement("small");
   nftLine.className = "muted";
   nftLine.style.marginTop = "4px";
   nftLine.style.display = "block";
-  article.appendChild(nftLine);
+  contentWrap.appendChild(nftLine);
 
   // Async: check DB license status and update button/pill
   const wallet = typeof getWalletAddress === "function" ? getWalletAddress() : null;
@@ -201,7 +275,7 @@ modelsList.addEventListener("click", async (event) => {
 
   // Already purchased → go to predict
   if (buyBtn.dataset.purchased === "true") {
-    window.location.href = `predict.html?model_id=${encodeURIComponent(modelId)}`;
+    window.location.href = `pages/predict.html?model_id=${encodeURIComponent(modelId)}`;
     return;
   }
 
@@ -305,7 +379,7 @@ modelsList.addEventListener("click", async (event) => {
         ? `NFT Token #${nftTokenId}\nMetadata: ${metadataUri}`
         : `License stored in DB.\nMetadata URI: ${metadataUri || "(no metadata)"}`,
       () => {
-        window.location.href = `predict.html?model_id=${encodeURIComponent(modelId)}`;
+        window.location.href = `pages/predict.html?model_id=${encodeURIComponent(modelId)}`;
       }
     );
 
